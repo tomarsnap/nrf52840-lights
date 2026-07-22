@@ -1,0 +1,9 @@
+# Copyright (c) nice!nano community
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_NICE_NANO_NRF52840
+
+config BOARD
+	default "nice_nano_nrf52840"
+
+endif # BOARD_NICE_NANO_NRF52840

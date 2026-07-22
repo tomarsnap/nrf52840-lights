@@ -1,0 +1,107 @@
+/*
+ * Copyright (c) nice!nano community
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * nice!nano v2 — nRF52840
+ *
+ * Pinout (Pro Micro compatible, top-left = pin 1):
+ *   Left  (top→bottom): RAW, GND, RST, VCC, P0.22, P0.24, P1.00, P0.11, P1.04, P1.06
+ *   Right (top→bottom): D+,  P0.06(TX), P0.08(RX), GND, P0.04, P0.02, P1.11, P1.13, P1.15, P0.29, P0.31, P0.30
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "nice_nano_nrf52840-pinctrl.dtsi"
+
+/ {
+	model = "nice!nano";
+	compatible = "nicekeyboards,nice-nano";
+
+	chosen {
+		zephyr,sram        = &sram0;
+		zephyr,flash       = &flash0;
+		zephyr,code-partition = &code_partition;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led0: led_0 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+	};
+
+	aliases {
+		led0 = &led0;
+	};
+};
+
+&adc  { status = "okay"; };
+&gpiote { status = "okay"; };
+&gpio0  { status = "okay"; };
+&gpio1  { status = "okay"; };
+
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "disabled";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "disabled";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "disabled";
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* spi3 is used by the WS2812 overlay — left unset here so the overlay owns it */
+
+&usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+};
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* MBR — must not be overwritten (4 KB) */
+		mbr_partition: partition@0 {
+			label = "mbr";
+			reg = <0x00000000 0x00001000>;
+			read-only;
+		};
+
+		/*
+		 * Application starts at 0x1000 — same as the original ZMK/Adafruit
+		 * firmware. Zephyr's own BLE controller (BT_CTLR) replaces S140
+		 * so no SoftDevice offset is needed.
+		 * Adafruit UF2 bootloader lives at 0xF4000-0xFFFFF.
+		 */
+		code_partition: partition@1000 {
+			label = "code";
+			reg = <0x00001000 0x000F3000>;
+		};
+
+		/* NVS / LittleFS storage before the bootloader */
+		storage_partition: partition@f4000 {
+			label = "storage";
+			reg = <0x000F4000 0x0000C000>;
+		};
+	};
+};

@@ -1,0 +1,3 @@
+mainmenu "BL-LED Configuration"
+
+source "Kconfig.zephyr"

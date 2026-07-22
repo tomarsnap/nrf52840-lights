@@ -1,0 +1,42 @@
+# Zephyr / west build output
+build/
+build-*/
+twister-out/
+twister-out.*/
+
+# west workspace metadata (the SDK lives outside this repo, in ~/ncs)
+.west/
+
+# Generated Kconfig / devicetree artefacts, if a build ever writes in-tree
+*.config.old
+zephyr.dts.pre
+dts.cmake
+
+# Claude Code local settings (machine-specific permissions etc.)
+.claude/settings.local.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Firmware images built at the repo root by accident
+*.uf2
+*.hex
+*.bin
+*.elf
+*.map

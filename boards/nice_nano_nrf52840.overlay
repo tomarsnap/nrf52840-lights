@@ -1,0 +1,88 @@
+/*
+ * Device Tree overlay for nice!nano — WS2812 driven over I2S.
+ *
+ * WHY I2S AND NOT SPI:
+ * Every SPI transfer on this board faults with K_ERR_ARM_MEM_DATA_ACCESS (an
+ * MPU data-access violation), including a bare 1-byte spi_write_dt(), on both
+ * SPIM1 and SPIM3, with the strip disconnected. That crash is unexplained.
+ * I2S drives the same pin through a separate path and works.
+ *
+ * Data goes out on P0.06.
+ *
+ * I2S requires SCK and LRCK to be assigned even though WS2812 uses only the
+ * data line, so they are parked on P0.22 and P0.24 — free on this board and
+ * nothing is wired to them. They toggle harmlessly.
+ */
+
+#include <zephyr/dt-bindings/led/led.h>
+
+/ {
+    chosen {
+        zephyr,console = &cdc_acm_uart0;
+
+        /* The SoC dtsi points entropy at the CryptoCell. That driver is
+         * disabled (CONFIG_HW_CC3XX=n — it fails to link against picolibc
+         * with this toolchain), so use the plain RNG peripheral instead. */
+        zephyr,entropy = &rng;
+    };
+
+    aliases {
+        led-strip = &led_strip;
+    };
+
+    led_strip: ws2812 {
+        compatible = "worldsemi,ws2812-i2s";
+
+        i2s-dev = <&i2s0>;
+        chain-length = <18>;    /* number of pixels — adjust to your ring */
+
+        /* WS2812 GRB byte order */
+        color-mapping = <LED_COLOR_ID_GREEN
+                         LED_COLOR_ID_RED
+                         LED_COLOR_ID_BLUE>;
+
+        reset-delay = <120>;
+
+        /*
+         * Default 300 us is not enough — the peripheral is still draining
+         * when the next write arrives and it gets rejected with -EIO
+         * ("Cannot write in state: 3" = I2S_STATE_STOPPING).
+         *
+         * 10 ms is the value that produced the best result so far: the strip
+         * showed red, then a single green pixel, i.e. more than one frame got
+         * through. Not yet reliable for every frame.
+         */
+        extra-wait-time = <10000>;
+    };
+};
+
+&usbd {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+&pinctrl {
+    i2s0_default_alt: i2s0_default_alt {
+        group1 {
+            psels = <NRF_PSEL(I2S_SCK_M, 0, 22)>,
+                    <NRF_PSEL(I2S_LRCK_M, 0, 24)>,
+                    <NRF_PSEL(I2S_SDOUT, 0, 6)>;
+        };
+    };
+};
+
+&i2s0 {
+    status = "okay";
+    pinctrl-0 = <&i2s0_default_alt>;
+    pinctrl-names = "default";
+};
+
+/* SPI is not used for the strip — it crashes the CPU on this board. */
+&spi1 {
+    status = "disabled";
+};
+
+&spi3 {
+    status = "disabled";
+};
