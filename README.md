@@ -64,6 +64,23 @@ Full detail, including the wrong turns, is in `HANDOVER_NOTES.md`.
 
 ---
 
+## Known issues
+
+**`chain-length = 36` does not boot.** 18 works; 36 produces a dead board —
+solid LED, no USB, nothing on serial — with everything else identical
+(confirmed by a control build). Nothing in the driver explains it: the I2S
+buffer is `(3N + 1 + 12) × 4`, so 268 bytes at 18 and 484 at 36, both valid
+multiples of 4 and well within limits. Unresolved; bisecting the count to find
+the threshold is the obvious next step.
+
+**Debugging Bluetooth: `CONFIG_BT=y` without calling `bt_enable()` is not a
+valid test.** The build links with `-Wl,--gc-sections`, so if nothing
+references `bt_enable()` the linker discards most of the stack *including its
+`SYS_INIT` entries*. That build boots perfectly while containing none of the
+code under test — a false negative that cost hours.
+
+---
+
 ## Building
 
 Requires the nRF Connect SDK in `~/ncs` (see `scripts/setup.sh`).
