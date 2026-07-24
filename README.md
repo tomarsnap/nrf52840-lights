@@ -22,10 +22,24 @@ using the Nordic UART Service (NUS).
 | 5V | **External 5 V supply** — see below |
 | GND | Supply ground **and** board GND (must be common) |
 
+> **Never drive the data line into an unpowered strip.** Power the ring up
+> before (or with) the board — never after. WS2812 data pins have ESD
+> protection diodes to their own VDD rail, so if the board drives DIN high
+> while the strip's VDD sits at 0 V, current flows backwards through that
+> diode and tries to power the whole ring through one GPIO pin. The board
+> browns out: solid LED, no USB, nothing on serial.
+>
+> This scales with pixel count, which makes it a convincing impostor for a
+> firmware bug — 18 pixels of parasitic load the board survives, 36 kills it.
+> It cost a long hunt through I2S buffer maths that never had a mechanism
+> behind it. If the board dies the moment the ring is attached, check the
+> ring's VDD before touching any code.
+
 > **Do not power the ring from the `RAW` pin.** It reads ~4.24 V on a
 > multimeter but collapses under load, leaving the ring completely dark. A
 > meter draws no current, so it measures fine while being entirely broken.
-> This cost hours of debugging. Use a separate 5 V supply and share ground.
+> This is the same failure as above by another route: a collapsed rail is
+> electrically an unpowered strip. Use a separate supply and share ground.
 
 Ground **must** be shared: P0.06 swings 0–3.3 V relative to the board's
 ground, so the ring needs that same reference to read the data line.
@@ -37,8 +51,35 @@ board resetting.
 
 ### Ring size
 
-Set `chain-length` in `boards/nice_nano_nrf52840.overlay`. Everything else —
-effects, buffers, rainbow spread — derives from it automatically.
+**The pixel count is set at runtime and persists** — send `N<count>` over BLE
+(e.g. `N36`) and it is saved to flash, so one firmware image drives an 18, 36
+or 72 pixel chain. No rebuild needed to change rings.
+
+`chain-length` in `boards/nice_nano_nrf52840.overlay` is the compile-time
+**maximum** (currently 72), because it sizes the static I2S DMA buffer. The
+runtime count can be anything from 1 up to that ceiling. Raise it only if a
+product needs more pixels than 72.
+
+Multiple rings wire in **series**: DOUT of the first into DIN of the second,
+and set the count to the total. The nRF52840 has only one I2S instance, so
+chaining is the only way to drive more than one ring — they cannot be run as
+independent strips.
+
+Data for pixels beyond the active count is still clocked out — the driver
+always transmits a full-length frame — but falls off the end of a shorter
+chain harmlessly. This is deliberate; see the comment on `strip_flush()` in
+`src/led_effects.c` for why a short frame would corrupt the display.
+
+RAM cost is negligible at any realistic size. The I2S buffer is
+`(3N + 1 + 12) × 4` bytes, double-buffered:
+
+| max pixels | I2S buffer | mem slab |
+|---|---|---|
+| 18 | 268 B | 536 B |
+| 36 | 484 B | 968 B |
+| 72 | 916 B | 1832 B |
+
+Power, not memory, is the limit that matters.
 
 ---
 
@@ -55,23 +96,23 @@ assumptions. These were found the hard way and are load-bearing:
    runs. `CONFIG_BT_LL_SW_SPLIT=y` avoids it.
 3. **There is no 32.768 kHz crystal**, though the board files originally
    claimed one. `CONFIG_CLOCK_CONTROL_NRF_K32SRC_RC=y` is required for BLE.
+4. **`storage_partition` used to overlap the bootloader.** It was defined at
+   `0xF4000` — exactly where the Adafruit UF2 bootloader starts — and was
+   harmless only because nothing wrote to it. NVS erases every page it owns,
+   so the first settings save would have destroyed the bootloader and left
+   the board recoverable only over SWD. It now sits at `0xF0000–0xF4000`,
+   carved out of the code partition. **Do not move it back.**
 
 The onboard LED on P0.15 is **red** here, despite the board files calling it
 "Blue LED". A separate blue LED exists that firmware does not control — it is
 a power/charge indicator.
 
-Full detail, including the wrong turns, is in `HANDOVER_NOTES.md`.
+Each of these is explained where it is applied — see the comments in
+`prj.conf` and `boards/nice_nano_nrf52840.overlay`.
 
 ---
 
 ## Known issues
-
-**`chain-length = 36` does not boot.** 18 works; 36 produces a dead board —
-solid LED, no USB, nothing on serial — with everything else identical
-(confirmed by a control build). Nothing in the driver explains it: the I2S
-buffer is `(3N + 1 + 12) × 4`, so 268 bytes at 18 and 484 at 36, both valid
-multiples of 4 and well within limits. Unresolved; bisecting the count to find
-the threshold is the obvious next step.
 
 **Debugging Bluetooth: `CONFIG_BT=y` without calling `bt_enable()` is not a
 valid test.** The build links with `-Wl,--gc-sections`, so if nothing
@@ -129,6 +170,7 @@ Case-insensitive ASCII.
 | `E<0-3>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe |
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness |
+| `N<count>` | `N36` | Set pixel count (1–72). Saved to flash, survives reboot |
 
 ---
 
@@ -155,7 +197,6 @@ prove the firmware is running — it may be displaying a stale frame.
 bl-led/
 ├── CMakeLists.txt
 ├── prj.conf                        # Kconfig — heavily commented, load-bearing
-├── HANDOVER_NOTES.md               # debugging history and hardware findings
 ├── boards/
 │   ├── nice_nano_nrf52840.overlay  # I2S + WS2812 node, console, entropy
 │   └── nicekeyboards/nice_nano/    # custom board definition

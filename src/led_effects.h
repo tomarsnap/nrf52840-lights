@@ -18,8 +18,21 @@ int led_effects_init(void);
  * the whole strip, so the caller controls when that happens. */
 void led_effects_start(void);
 
-/* Number of pixels the strip is configured for (DTS chain-length). */
-int led_effects_pixel_count(void);
+/*
+ * Active pixel count — how many LEDs are physically connected.
+ *
+ * The DTS chain-length is the MAXIMUM the firmware supports; the active count
+ * is set at runtime and persisted, so one image drives an 18, 36 or 72 pixel
+ * chain. Data for pixels beyond the active count is still clocked out (the
+ * driver always transmits a full frame) but simply falls off the end of a
+ * shorter chain.
+ */
+int led_effects_pixel_count(void);      /* currently active count */
+int led_effects_max_pixels(void);       /* DTS chain-length — the ceiling */
+
+/* Set the active count and persist it. Takes effect on the next frame.
+ * Returns -EINVAL if count is 0 or above the maximum. */
+int led_effects_set_count(uint16_t count);
 
 /* Drive a single solid color immediately, bypassing the effect thread.
  * For bring-up diagnostics. Returns the driver's update status. */

@@ -1,11 +1,14 @@
 /*
  * BL-LED — WS2812 ring controller, driven over BLE.
  *
- * Hardware notes that are easy to get wrong (see HANDOVER_NOTES.md):
+ * Hardware notes that are easy to get wrong (see README.md):
  *   - The ring is driven over I2S, not SPI. SPI crashes this board.
  *   - Power the ring from an EXTERNAL supply with a shared ground. Powering
  *     it from RAW does not work: RAW reads ~4.24 V unloaded but collapses
  *     under load, and the ring stays dark.
+ *   - Never drive data into an unpowered ring: it backfeeds through the
+ *     WS2812 input protection diode and browns out the board. The bigger
+ *     the ring, the more reliably it kills it.
  */
 
 #include <zephyr/kernel.h>

@@ -8,14 +8,21 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 
 LOG_MODULE_REGISTER(led_effects, LOG_LEVEL_INF);
 
 #define STRIP_NODE        DT_ALIAS(led_strip)
-#define STRIP_NUM_PIXELS  DT_PROP(STRIP_NODE, chain_length)
+
+/*
+ * The DTS chain-length is the MAXIMUM number of pixels this build supports —
+ * it sizes the pixel buffer and the driver's I2S DMA buffer, both of which
+ * are static. The number actually lit is state_count, set at runtime.
+ */
+#define STRIP_MAX_PIXELS  DT_PROP(STRIP_NODE, chain_length)
 
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
-static struct led_rgb pixels[STRIP_NUM_PIXELS];
+static struct led_rgb pixels[STRIP_MAX_PIXELS];
 
 /* State — written from BLE thread, read from LED thread */
 static K_MUTEX_DEFINE(state_mutex);
@@ -24,6 +31,71 @@ static uint8_t      state_r          = 255;
 static uint8_t      state_g          = 0;
 static uint8_t      state_b          = 0;
 static uint8_t      state_brightness = 128;
+static uint16_t     state_count      = STRIP_MAX_PIXELS; /* overridden by settings */
+
+/* ── Persistence ─────────────────────────────────────────────────────────── */
+/*
+ * The count lives in NVS under "led/count" via the settings subsystem.
+ *
+ * Saving is deferred to a work item rather than done inline: settings_save_one()
+ * erases and writes flash, which blocks for milliseconds, and the setter is
+ * called from the BLE RX callback. The delay also debounces an app that sends
+ * several counts as the user drags a slider.
+ */
+#define SETTINGS_SAVE_DELAY  K_MSEC(750)
+
+static void count_save_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint16_t count = state_count;
+    k_mutex_unlock(&state_mutex);
+
+    int err = settings_save_one("led/count", &count, sizeof(count));
+    if (err) {
+        LOG_ERR("Failed to persist pixel count: %d", err);
+    } else {
+        LOG_INF("Pixel count %u saved", count);
+    }
+}
+
+static K_WORK_DELAYABLE_DEFINE(count_save_work, count_save_fn);
+
+static int led_settings_set(const char *name, size_t len,
+                            settings_read_cb read_cb, void *cb_arg)
+{
+    const char *next;
+
+    if (settings_name_steq(name, "count", &next) && !next) {
+        uint16_t count;
+
+        if (len != sizeof(count)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &count, sizeof(count));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Guard against a value saved by a build with a larger chain. */
+        if (count == 0U || count > STRIP_MAX_PIXELS) {
+            LOG_WRN("Stored count %u out of range (1-%d), ignoring",
+                    count, STRIP_MAX_PIXELS);
+            return 0;
+        }
+
+        state_count = count;
+        LOG_INF("Restored pixel count: %u", count);
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(led_effects, "led", NULL,
+                               led_settings_set, NULL, NULL);
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -41,19 +113,51 @@ static uint8_t scale(uint8_t val, uint8_t brightness)
  * failed with nrfx INVALID_STATE (0x0bad000c) and NOTHING was sent after the
  * first frame. Without it, some later frames do get through.
  */
-static int strip_flush(void)
+/*
+ * Always transmits a FULL chain-length frame, blanking any pixels past the
+ * active count.
+ *
+ * Passing a short count to led_strip_update_rgb() looks like the obvious way
+ * to drive a shorter chain, but it is wrong: the driver serialises only the
+ * pixels given, appends the reset gap, then hands i2s_write() the full
+ * tx_buf_bytes regardless. The reset would land mid-buffer and the leftover
+ * tail — uninitialised slab memory — would clock out behind it as a second,
+ * garbage frame. Sending the whole chain keeps exactly one frame on the wire;
+ * the surplus falls off the end of a shorter strip harmlessly.
+ */
+static uint16_t active_count(void)
 {
-    return led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint16_t count = state_count;
+    k_mutex_unlock(&state_mutex);
+
+    return count;
+}
+
+/*
+ * `count` is snapshotted once per frame by the caller so the loop that fills
+ * the pixels and the blanking below cannot disagree if BLE changes it midway.
+ */
+static int strip_flush(uint16_t count)
+{
+    if (count < STRIP_MAX_PIXELS) {
+        memset(&pixels[count], 0,
+               (STRIP_MAX_PIXELS - count) * sizeof(pixels[0]));
+    }
+
+    return led_strip_update_rgb(strip, pixels, STRIP_MAX_PIXELS);
 }
 
 static int fill(uint8_t r, uint8_t g, uint8_t b, uint8_t bri)
 {
-    for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
+    uint16_t count = active_count();
+
+    for (uint16_t i = 0; i < count; i++) {
         pixels[i].r = scale(r, bri);
         pixels[i].g = scale(g, bri);
         pixels[i].b = scale(b, bri);
     }
-    return strip_flush();
+    return strip_flush(count);
 }
 
 /* Simple HSV→RGB: hue 0–255, sat=val=255 */
@@ -91,6 +195,7 @@ static void led_thread_fn(void *a, void *b, void *c)
         uint8_t      g         = state_g;
         uint8_t      b         = state_b;
         uint8_t      brightness = state_brightness;
+        uint16_t     count      = state_count;
         k_mutex_unlock(&state_mutex);
 
         switch (effect) {
@@ -105,15 +210,17 @@ static void led_thread_fn(void *a, void *b, void *c)
             break;
 
         case EFFECT_RAINBOW:
-            for (int i = 0; i < STRIP_NUM_PIXELS; i++) {
-                uint8_t hue = rainbow_offset + (uint8_t)(i * 256U / STRIP_NUM_PIXELS);
+            /* Spread one full hue cycle over the ACTIVE pixels, so the
+             * gradient wraps correctly whatever the ring size. */
+            for (uint16_t i = 0; i < count; i++) {
+                uint8_t hue = rainbow_offset + (uint8_t)(i * 256U / count);
                 uint8_t hr, hg, hb;
                 hsv_to_rgb(hue, &hr, &hg, &hb);
                 pixels[i].r = scale(hr, brightness);
                 pixels[i].g = scale(hg, brightness);
                 pixels[i].b = scale(hb, brightness);
             }
-            strip_flush();
+            strip_flush(count);
             rainbow_offset++;
             k_sleep(K_MSEC(30));
             break;
@@ -148,7 +255,20 @@ int led_effects_init(void)
         return -ENODEV;
     }
 
-    LOG_INF("LED strip ready: %d pixels", STRIP_NUM_PIXELS);
+    /* Restore the persisted pixel count. A failure here is not fatal — the
+     * strip still runs, just at the compile-time maximum. */
+    int err = settings_subsys_init();
+    if (err) {
+        LOG_ERR("settings_subsys_init failed: %d", err);
+    } else {
+        err = settings_load();
+        if (err) {
+            LOG_ERR("settings_load failed: %d", err);
+        }
+    }
+
+    LOG_INF("LED strip ready: %u active of %d max pixels",
+            state_count, STRIP_MAX_PIXELS);
     return 0;
 }
 
@@ -159,7 +279,29 @@ void led_effects_start(void)
 
 int led_effects_pixel_count(void)
 {
-    return STRIP_NUM_PIXELS;
+    return active_count();
+}
+
+int led_effects_max_pixels(void)
+{
+    return STRIP_MAX_PIXELS;
+}
+
+int led_effects_set_count(uint16_t count)
+{
+    if (count == 0U || count > STRIP_MAX_PIXELS) {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_count = count;
+    k_mutex_unlock(&state_mutex);
+
+    /* Reschedules if already pending, so a burst of changes writes once. */
+    k_work_reschedule(&count_save_work, SETTINGS_SAVE_DELAY);
+
+    LOG_INF("Pixel count → %u", count);
+    return 0;
 }
 
 int led_effects_direct_fill(uint8_t r, uint8_t g, uint8_t b, uint8_t bri)
@@ -169,7 +311,9 @@ int led_effects_direct_fill(uint8_t r, uint8_t g, uint8_t b, uint8_t bri)
 
 int led_effects_direct_pixel(int idx, uint8_t r, uint8_t g, uint8_t b, uint8_t bri)
 {
-    if (idx < 0 || idx >= STRIP_NUM_PIXELS) {
+    uint16_t count = active_count();
+
+    if (idx < 0 || idx >= count) {
         return -EINVAL;
     }
 
@@ -178,7 +322,7 @@ int led_effects_direct_pixel(int idx, uint8_t r, uint8_t g, uint8_t b, uint8_t b
     pixels[idx].g = scale(g, bri);
     pixels[idx].b = scale(b, bri);
 
-    return strip_flush();
+    return strip_flush(count);
 }
 
 void led_effects_set_effect(led_effect_t effect)

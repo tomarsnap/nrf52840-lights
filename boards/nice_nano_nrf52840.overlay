@@ -34,7 +34,15 @@
         compatible = "worldsemi,ws2812-i2s";
 
         i2s-dev = <&i2s0>;
-        chain-length = <18>;    /* number of pixels — adjust to your ring */
+        /*
+         * MAXIMUM supported pixels, not the number connected. This sizes the
+         * static I2S DMA buffer, so it is fixed at build time; the count
+         * actually lit is set over BLE ("N<count>") and persisted to NVS.
+         *
+         * 72 = two 36-pixel rings wired in series, the largest product build.
+         * Cost is ~24 bytes of RAM per pixel of headroom.
+         */
+        chain-length = <72>;
 
         /* WS2812 GRB byte order */
         color-mapping = <LED_COLOR_ID_GREEN

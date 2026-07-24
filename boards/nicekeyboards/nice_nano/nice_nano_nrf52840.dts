@@ -91,17 +91,29 @@
 		 * Application starts at 0x1000 — same as the original ZMK/Adafruit
 		 * firmware. Zephyr's own BLE controller (BT_CTLR) replaces S140
 		 * so no SoftDevice offset is needed.
-		 * Adafruit UF2 bootloader lives at 0xF4000-0xFFFFF.
+		 *
+		 * Ends at 0xF0000 to leave room for the storage partition below.
+		 * The app is ~144 KB, so 956 KB of code space is not a constraint.
 		 */
 		code_partition: partition@1000 {
 			label = "code";
-			reg = <0x00001000 0x000F3000>;
+			reg = <0x00001000 0x000EF000>;
 		};
 
-		/* NVS / LittleFS storage before the bootloader */
-		storage_partition: partition@f4000 {
+		/*
+		 * NVS storage for the settings subsystem (16 KB = 4 flash pages).
+		 *
+		 * MUST end at or before 0xF4000: the Adafruit UF2 bootloader owns
+		 * 0xF4000-0xFFFFF, and NVS erases every page it is given. This
+		 * partition previously started AT 0xF4000 and was 0xC000 long,
+		 * i.e. exactly on top of the bootloader — harmless only because
+		 * nothing ever wrote to it. The first settings_save() would have
+		 * erased the bootloader and left the board recoverable only over
+		 * SWD. Do not move this back.
+		 */
+		storage_partition: partition@f0000 {
 			label = "storage";
-			reg = <0x000F4000 0x0000C000>;
+			reg = <0x000F0000 0x00004000>;
 		};
 	};
 };

@@ -55,6 +55,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   E<0-3>          set effect  (0=off, 1=solid, 2=rainbow, 3=breathe)
  *   C<r>,<g>,<b>    set color   (0-255 per channel)
  *   B<0-255>        set brightness
+ *   N<count>        set pixel count (1..chain-length), persisted to flash
  */
 static void on_nus_received(struct bt_conn *conn,
                             const uint8_t  *data,
@@ -99,6 +100,19 @@ static void on_nus_received(struct bt_conn *conn,
     case 'b': {
         int bri = atoi(&buf[1]);
         led_effects_set_brightness((uint8_t)bri);
+        break;
+    }
+    case 'n': {
+        /* Range-check before narrowing: a value above UINT16_MAX would
+         * otherwise wrap into the valid range. */
+        int count = atoi(&buf[1]);
+
+        if (count < 1 || count > led_effects_max_pixels()) {
+            LOG_WRN("Bad pixel count %d (valid 1-%d)",
+                    count, led_effects_max_pixels());
+        } else {
+            led_effects_set_count((uint16_t)count);
+        }
         break;
     }
     default:
