@@ -21,6 +21,13 @@ LOG_MODULE_REGISTER(led_effects, LOG_LEVEL_INF);
  */
 #define STRIP_MAX_PIXELS  DT_PROP(STRIP_NODE, chain_length)
 
+/*
+ * Brightness used until a value is restored from NVS. Deliberately low: a
+ * first boot drives every pixel, and a full-brightness ring pulls ~60 mA per
+ * pixel, which is more than most supplies (and USB) will give.
+ */
+#define DEFAULT_BRIGHTNESS  64
+
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 static struct led_rgb pixels[STRIP_MAX_PIXELS];
 
@@ -30,37 +37,53 @@ static led_effect_t state_effect     = EFFECT_RAINBOW; /* visible on boot for hw
 static uint8_t      state_r          = 255;
 static uint8_t      state_g          = 0;
 static uint8_t      state_b          = 0;
-static uint8_t      state_brightness = 128;
-static uint16_t     state_count      = STRIP_MAX_PIXELS; /* overridden by settings */
+static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by settings */
+static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
 
 /* ── Persistence ─────────────────────────────────────────────────────────── */
 /*
- * The count lives in NVS under "led/count" via the settings subsystem.
+ * Persisted under "led/" in NVS via the settings subsystem:
+ *   led/count  uint16_t  active pixel count
+ *   led/bri    uint8_t   brightness
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
- * erases and writes flash, which blocks for milliseconds, and the setter is
- * called from the BLE RX callback. The delay also debounces an app that sends
- * several counts as the user drags a slider.
+ * erases and writes flash, which blocks for milliseconds, and the setters are
+ * called from the BLE RX callback. The delay also debounces an app that sends a
+ * stream of values as the user drags a slider.
+ *
+ * Every field is written on each save. That is not wasteful: NVS compares
+ * against the stored value and skips the write when unchanged, so an
+ * unmodified field costs a read, not a flash erase.
+ *
+ * The effect and colour are deliberately NOT persisted — the effect is stored
+ * as a bare index, and renumbering the enum would silently restore the wrong
+ * one. Add them here if that becomes worth handling.
  */
 #define SETTINGS_SAVE_DELAY  K_MSEC(750)
 
-static void count_save_fn(struct k_work *work)
+static void settings_save_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
 
     k_mutex_lock(&state_mutex, K_FOREVER);
-    uint16_t count = state_count;
+    uint16_t count      = state_count;
+    uint8_t  brightness = state_brightness;
     k_mutex_unlock(&state_mutex);
 
     int err = settings_save_one("led/count", &count, sizeof(count));
     if (err) {
         LOG_ERR("Failed to persist pixel count: %d", err);
-    } else {
-        LOG_INF("Pixel count %u saved", count);
     }
+
+    err = settings_save_one("led/bri", &brightness, sizeof(brightness));
+    if (err) {
+        LOG_ERR("Failed to persist brightness: %d", err);
+    }
+
+    LOG_INF("Settings saved: %u pixels, brightness %u", count, brightness);
 }
 
-static K_WORK_DELAYABLE_DEFINE(count_save_work, count_save_fn);
+static K_WORK_DELAYABLE_DEFINE(settings_save_work, settings_save_fn);
 
 static int led_settings_set(const char *name, size_t len,
                             settings_read_cb read_cb, void *cb_arg)
@@ -88,6 +111,24 @@ static int led_settings_set(const char *name, size_t len,
 
         state_count = count;
         LOG_INF("Restored pixel count: %u", count);
+        return 0;
+    }
+
+    if (settings_name_steq(name, "bri", &next) && !next) {
+        uint8_t brightness;
+
+        if (len != sizeof(brightness)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &brightness, sizeof(brightness));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Any uint8_t is a valid brightness, so no range check needed. */
+        state_brightness = brightness;
+        LOG_INF("Restored brightness: %u", brightness);
         return 0;
     }
 
@@ -267,8 +308,8 @@ int led_effects_init(void)
         }
     }
 
-    LOG_INF("LED strip ready: %u active of %d max pixels",
-            state_count, STRIP_MAX_PIXELS);
+    LOG_INF("LED strip ready: %u active of %d max pixels, brightness %u",
+            state_count, STRIP_MAX_PIXELS, state_brightness);
     return 0;
 }
 
@@ -298,7 +339,7 @@ int led_effects_set_count(uint16_t count)
     k_mutex_unlock(&state_mutex);
 
     /* Reschedules if already pending, so a burst of changes writes once. */
-    k_work_reschedule(&count_save_work, SETTINGS_SAVE_DELAY);
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
 
     LOG_INF("Pixel count → %u", count);
     return 0;
@@ -348,5 +389,17 @@ void led_effects_set_brightness(uint8_t brightness)
     k_mutex_lock(&state_mutex, K_FOREVER);
     state_brightness = brightness;
     k_mutex_unlock(&state_mutex);
+
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
     LOG_INF("Brightness → %d", brightness);
+}
+
+uint8_t led_effects_get_brightness(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint8_t brightness = state_brightness;
+    k_mutex_unlock(&state_mutex);
+
+    return brightness;
 }

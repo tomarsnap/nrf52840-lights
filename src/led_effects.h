@@ -43,4 +43,9 @@ int led_effects_direct_fill(uint8_t r, uint8_t g, uint8_t b, uint8_t bri);
 int led_effects_direct_pixel(int idx, uint8_t r, uint8_t g, uint8_t b, uint8_t bri);
 void led_effects_set_effect(led_effect_t effect);
 void led_effects_set_color(uint8_t r, uint8_t g, uint8_t b);
+
+/* Brightness is persisted, like the pixel count, and restored at boot.
+ * Do not set it unconditionally at startup — that would overwrite the
+ * value the user saved. */
 void led_effects_set_brightness(uint8_t brightness);
+uint8_t led_effects_get_brightness(void);

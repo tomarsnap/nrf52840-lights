@@ -112,8 +112,10 @@ int main(void)
     if (err) {
         LOG_ERR("LED strip init failed: %d", err);
     } else {
+        /* Brightness and pixel count are restored from NVS by
+         * led_effects_init() — deliberately not set here, or the saved
+         * value would be overwritten on every boot. */
         led_effects_set_effect(EFFECT_RAINBOW);
-        led_effects_set_brightness(64);
         led_effects_start();
     }
 

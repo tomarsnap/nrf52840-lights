@@ -57,6 +57,19 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   B<0-255>        set brightness
  *   N<count>        set pixel count (1..chain-length), persisted to flash
  */
+/*
+ * Every numeric argument is range-checked BEFORE being narrowed to uint8_t.
+ *
+ * Casting first is silently destructive: "B256" — an entirely reasonable thing
+ * to type if you assume the range is 0-256 — wraps to 0, blanks the ring, and
+ * persists that, so the next boot comes up dark and looks like dead hardware.
+ * Negative values wrap just as badly ("B-5" becomes 251).
+ */
+static bool in_byte_range(int v)
+{
+    return v >= 0 && v <= 255;
+}
+
 static void on_nus_received(struct bt_conn *conn,
                             const uint8_t  *data,
                             uint16_t        len)
@@ -90,16 +103,24 @@ static void on_nus_received(struct bt_conn *conn,
     }
     case 'c': {
         int r, g, b;
-        if (sscanf(&buf[1], "%d,%d,%d", &r, &g, &b) == 3) {
-            led_effects_set_color((uint8_t)r, (uint8_t)g, (uint8_t)b);
-        } else {
+
+        if (sscanf(&buf[1], "%d,%d,%d", &r, &g, &b) != 3) {
             LOG_WRN("Bad color format: %s", buf);
+        } else if (!in_byte_range(r) || !in_byte_range(g) || !in_byte_range(b)) {
+            LOG_WRN("Color out of range: %d,%d,%d (valid 0-255)", r, g, b);
+        } else {
+            led_effects_set_color((uint8_t)r, (uint8_t)g, (uint8_t)b);
         }
         break;
     }
     case 'b': {
         int bri = atoi(&buf[1]);
-        led_effects_set_brightness((uint8_t)bri);
+
+        if (!in_byte_range(bri)) {
+            LOG_WRN("Bad brightness %d (valid 0-255)", bri);
+        } else {
+            led_effects_set_brightness((uint8_t)bri);
+        }
         break;
     }
     case 'n': {

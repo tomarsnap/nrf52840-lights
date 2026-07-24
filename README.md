@@ -169,8 +169,26 @@ Case-insensitive ASCII.
 |---|---|---|
 | `E<0-3>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe |
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
-| `B<0-255>` | `B128` | Set brightness |
-| `N<count>` | `N36` | Set pixel count (1–72). Saved to flash, survives reboot |
+| `B<0-255>` | `B128` | Set brightness. **Persisted** |
+| `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
+
+Persisted values are written to NVS ~750 ms after the last change (debounced,
+so dragging a slider causes one write, not fifty) and restored at boot. NVS
+skips writes of unchanged data, so re-saving an untouched field costs no flash
+wear.
+
+Brightness defaults to **64/255** until something is saved — deliberately low,
+because a first boot lights every pixel and a full-brightness ring draws more
+than most supplies will give.
+
+Effect and colour are **not** persisted: the effect is stored as a bare index,
+and renumbering `led_effect_t` would silently restore the wrong one. The boot
+effect is set in `main.c`.
+
+Out-of-range arguments are rejected and logged rather than wrapped. `B0` is
+valid and means off — so **a ring that boots dark may simply have brightness 0
+saved**, not broken hardware. There is currently no command to clear settings;
+reconnect and send a higher `B` value.
 
 ---
 
