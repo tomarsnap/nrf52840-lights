@@ -1,13 +1,16 @@
+#include "battery.h"
 #include "ble_service.h"
 #include "led_effects.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <bluetooth/services/nus.h>
 #include <zephyr/logging/log.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -56,6 +59,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   C<r>,<g>,<b>    set color   (0-255 per channel)
  *   B<0-255>        set brightness
  *   N<count>        set pixel count (1..chain-length), persisted to flash
+ *   ?               report battery, pixel count and brightness
  */
 /*
  * Every numeric argument is range-checked BEFORE being narrowed to uint8_t.
@@ -68,6 +72,32 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 static bool in_byte_range(int v)
 {
     return v >= 0 && v <= 255;
+}
+
+/*
+ * Send a reply over NUS, split into MTU-sized chunks.
+ *
+ * A single notification carries at most (ATT_MTU - 3) bytes — only 20 with the
+ * default 23-byte MTU, which this peripheral never raises. The host stack
+ * silently DROPS a longer notification (bt_att_create_pdu() returns NULL and
+ * bt_gatt_notify() returns -ENOMEM), so a reply over 20 bytes just vanishes.
+ * That is exactly why the short "sampling" reply used to arrive but the full
+ * status line did not. Chunking works at whatever MTU is negotiated; a terminal
+ * reassembles the pieces into one line.
+ */
+static void nus_send_all(struct bt_conn *conn, const char *data, uint16_t len)
+{
+    uint16_t mtu   = bt_gatt_get_mtu(conn);
+    uint16_t chunk = (mtu > 3U) ? (uint16_t)(mtu - 3U) : 20U;
+
+    for (uint16_t off = 0; off < len; off += chunk) {
+        uint16_t this_len = MIN(chunk, (uint16_t)(len - off));
+
+        if (bt_nus_send(conn, (const uint8_t *)&data[off], this_len) != 0) {
+            /* Not subscribed, or no TX buffer free — stop. */
+            break;
+        }
+    }
 }
 
 static void on_nus_received(struct bt_conn *conn,
@@ -133,6 +163,29 @@ static void on_nus_received(struct bt_conn *conn,
                     count, led_effects_max_pixels());
         } else {
             led_effects_set_count((uint16_t)count);
+        }
+        break;
+    }
+    case '?': {
+        /* Battery level is also published via the standard BLE Battery
+         * Service; this is the human-readable version for a UART terminal. */
+        char out[80];
+        int  mv = battery_millivolts();
+        int  n;
+
+        if (mv < 0) {
+            n = snprintf(out, sizeof(out), "batt: sampling\n");
+        } else {
+            n = snprintf(out, sizeof(out),
+                         "batt %d mV (%u%%)%s | pixels %d | bri %u\n",
+                         mv, battery_percent(),
+                         led_effects_is_locked_out() ? " LOCKOUT" : "",
+                         led_effects_pixel_count(),
+                         led_effects_get_brightness());
+        }
+
+        if (n > 0) {
+            nus_send_all(conn, out, (uint16_t)n);
         }
         break;
     }

@@ -49,3 +49,8 @@ void led_effects_set_color(uint8_t r, uint8_t g, uint8_t b);
  * value the user saved. */
 void led_effects_set_brightness(uint8_t brightness);
 uint8_t led_effects_get_brightness(void);
+
+/* Force the strip black regardless of effect, for a critical battery.
+ * Not persisted — a reboot clears it. */
+void led_effects_set_lockout(bool lockout);
+bool led_effects_is_locked_out(void);

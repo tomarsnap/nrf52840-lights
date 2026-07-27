@@ -11,15 +11,17 @@
  *     the ring, the more reliably it kills it.
  */
 
+#include <errno.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/fatal.h>
-#include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
 
 #include <hal/nrf_gpio.h>
 
+#include "battery.h"
 #include "ble_service.h"
 #include "led_effects.h"
 
@@ -102,10 +104,21 @@ int main(void)
 {
     int err;
 
-    /* USB CDC console. Deliberately does not wait for a terminal — the
-     * device has to run headless. */
-    (void)usb_enable(NULL);
-
+    /*
+     * No USB, no console. The product ships headless — sealed case, battery,
+     * power switch, no terminal ever attached — so the app brings up neither.
+     *
+     * This is not just tidiness: with USB CDC as the console, writing flash
+     * while no host is draining the port hard-resets the board on EVERY
+     * settings save. An attached terminal masks it (the host keeps the USB
+     * endpoint drained), which is exactly why it looked like an intermittent
+     * regression — it only bit when running the way production runs. USB is
+     * not needed at run time; UF2 flashing is done by the bootloader,
+     * independent of the app.
+     *
+     * Logs below are compiled but have no backend and go nowhere. The onboard
+     * LED is the only liveness/crash signal — see the handlers above.
+     */
     LOG_INF("BL-LED starting");
 
     err = led_effects_init();
@@ -119,15 +132,28 @@ int main(void)
         led_effects_start();
     }
 
+    /* Battery gauge — see battery.h for what this does and does not protect
+     * against. A failure here must not stop the lights working. */
+    err = battery_init();
+    if (err == -ENODEV) {
+        /* Divider deliberately not fitted — a configuration, not a fault. */
+        LOG_INF("Battery monitoring disabled");
+    } else if (err) {
+        LOG_ERR("Battery monitor failed to start: %d", err);
+    } else {
+        battery_start();
+    }
+
     /*
-     * Let USB enumerate before starting Bluetooth.
-     *
-     * Removing this delay (while also changing the ring size) produced a
-     * board that would not boot at all — solid LED, no USB. The last build
-     * known to work had a long delay here, so BLE coming up before USB has
-     * settled is a live suspect, independent of pixel count.
+     * Give USB time to enumerate before bringing up Bluetooth — but only in a
+     * dev build that actually has USB. Removing this delay once coincided with
+     * a board that would not boot (solid LED, no USB), so BLE coming up before
+     * USB has settled is a suspect. Production has no USB (see prj.conf), so
+     * this compiles out and BLE advertises immediately.
      */
-    k_sleep(K_SECONDS(5));
+    if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
+        k_sleep(K_SECONDS(5));
+    }
 
     err = ble_service_init();
     if (err) {

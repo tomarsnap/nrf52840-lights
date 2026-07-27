@@ -81,6 +81,47 @@ RAM cost is negligible at any realistic size. The I2S buffer is
 
 Power, not memory, is the limit that matters.
 
+### Battery monitoring
+
+**Off by default.** Fit the divider, then set `status = "okay"` on the `vbatt`
+node in `boards/nice_nano_nrf52840.overlay`:
+
+```
+BAT+ ──[ 100k ]──┬──[ 100k ]── GND
+                 │
+               P0.02 (AIN0)
+```
+
+A cell reaches 4.2 V, above the SAADC's 3.6 V ceiling, so it must be divided.
+100k/100k draws 21 µA (~15 mAh/month, nothing against 3500 mAh). Both values
+are read from devicetree, so any ratio works — edit `output-ohms` (lower leg)
+and `full-ohms` (both legs).
+
+Once enabled, level is published via the standard **BLE Battery Service** (any
+app reads it natively) and by the `?` command. Percentage comes from a Li-ion
+discharge curve, not a linear map — the curve is flat from ~90% to ~20%, so a
+linear gauge reads ~50% for most of the runtime then collapses. Readings under
+load sag, so it reads low while the LEDs are bright; pessimistic is the safe
+direction.
+
+Below 3.1 V for three consecutive samples the LEDs are blanked. This latches
+until reboot on purpose: blanking removes most of the load, the cell rebounds
+above the threshold within seconds, and an unlatched check would oscillate.
+
+> **Why it is opt-in rather than auto-detected.** An unwired SAADC pin does not
+> read zero — measured on this board it wandered between 2.1 V and 2.8 V, which
+> are entirely plausible voltages for a dying cell. No threshold can separate
+> "not fitted" from "flat", so the firmware believed ~2.6 V and blanked a
+> perfectly healthy strip. Presence of hardware has to be declared, not
+> inferred. While `vbatt` is disabled the code compiles to stubs.
+
+> **This is a gauge, not protection.** It cannot disconnect anything — nothing
+> in the battery's current path is under firmware control — and it only runs
+> while the firmware does. Blanking the LEDs does **not** stop the drain: a
+> WS2812 draws ~1 mA even showing black, so 72 pixels still pull ~70 mA
+> afterwards. Only a hardware switch removes the load, and only a protection
+> PCB guards against over-discharge and short circuit when the MCU is dead.
+
 ---
 
 ## Board-specific gotchas
@@ -102,6 +143,14 @@ assumptions. These were found the hard way and are load-bearing:
    so the first settings save would have destroyed the bootloader and left
    the board recoverable only over SWD. It now sits at `0xF0000–0xF4000`,
    carved out of the code partition. **Do not move it back.**
+5. **A USB CDC console resets the board on flash writes when headless.** With
+   USB CDC as the console, writing flash (any settings save — `N`/`B`) while no
+   host is draining the port hard-resets the SoC on *every* save. An attached
+   terminal masks it completely (the host keeps the USB endpoint drained), so it
+   reads as an intermittent bug that only appears in the field — exactly the
+   production configuration. The app therefore brings up neither USB nor a
+   console; the LED and BLE are the only interfaces. Re-enable USB for dev only,
+   with a terminal attached.
 
 The onboard LED on P0.15 is **red** here, despite the board files calling it
 "Blue LED". A separate blue LED exists that firmware does not control — it is
@@ -171,6 +220,7 @@ Case-insensitive ASCII.
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness. **Persisted** |
 | `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
+| `?` | `?` | Report battery, pixel count and brightness |
 
 Persisted values are written to NVS ~750 ms after the last change (debounced,
 so dragging a slider causes one write, not fifty) and restored at boot. NVS
@@ -194,9 +244,13 @@ reconnect and send a higher `B` value.
 
 ## Diagnostics
 
-USB CDC serial on this board is unreliable — it drops output silently and goes
-quiet on re-enumeration, so **silence proves nothing**. The onboard LED is the
-signal to trust:
+**The production build is headless — no USB, no serial console** (see gotcha 5
+below). The onboard LED is the only local signal, and BLE `?` reports live
+state. For log output, build a dev image with USB re-enabled (re-enable the
+console block in `prj.conf` and `usb_enable()` in `main.c`) — but only with a
+terminal attached, or flash writes will reset the board.
+
+The onboard LED is the signal to trust:
 
 | LED | Meaning |
 |---|---|

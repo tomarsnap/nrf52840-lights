@@ -15,10 +15,14 @@
  */
 
 #include <zephyr/dt-bindings/led/led.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-adc.h>
 
 / {
     chosen {
-        zephyr,console = &cdc_acm_uart0;
+        /* No console: the app runs headless (see prj.conf). USB CDC as the
+         * console resets the board on flash writes when no host drains the
+         * port, so USB is not brought up at all. */
 
         /* The SoC dtsi points entropy at the CryptoCell. That driver is
          * disabled (CONFIG_HW_CC3XX=n — it fails to link against picolibc
@@ -64,9 +68,63 @@
     };
 };
 
-&usbd {
-    cdc_acm_uart0: cdc_acm_uart0 {
-        compatible = "zephyr,cdc-acm-uart";
+/*
+ * Battery sense — EXTERNAL divider, two resistors, wired by hand:
+ *
+ *   BAT+ ──[ 100k ]──┬──[ 100k ]── GND
+ *                    │
+ *                  P0.02 (AIN0)
+ *
+ * A cell tops out at 4.2 V, well over the SAADC's 3.6 V ceiling at the best
+ * gain, so it has to be divided. 100k/100k halves it to 2.1 V max and draws
+ * 21 uA — about 15 mAh a month, nothing against a 3500 mAh cell, and the
+ * hardware switch cuts even that.
+ *
+ * Values are read from this node at build time, so any ratio works: just
+ * update output-ohms (lower leg) and full-ohms (both legs).
+ *
+ * NOTE: some nice!nano clones already have a battery divider on P0.31/AIN7.
+ * If yours does, point io-channels at AIN7 and set the ratio to match rather
+ * than fitting these resistors — but MEASURE it first, the ratio varies.
+ */
+&adc {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    channel@0 {
+        reg = <0>;
+        zephyr,gain = "ADC_GAIN_1_6";              /* 0.6 V ref x 6 = 3.6 V FS */
+        zephyr,reference = "ADC_REF_INTERNAL";
+        /* 40 us: the 50k source impedance of the divider needs a long
+         * acquisition window to charge the sampling capacitor. */
+        zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 40)>;
+        zephyr,input-positive = <NRF_SAADC_AIN0>;  /* P0.02 */
+        zephyr,resolution = <12>;
+    };
+};
+
+/ {
+    /*
+     * Battery sense divider. Enable (status = "okay") only when the two
+     * resistors are physically fitted — on this build they are, and the reading
+     * was verified against a multimeter (3867 mV firmware vs 3.86 V measured).
+     *
+     * Why presence must be DECLARED here, not auto-detected: with no divider the
+     * pin floats, and a floating SAADC input does not read a convenient zero —
+     * measured on this board it wandered between 2.1 V and 2.8 V, entirely
+     * plausible voltages for a dying cell. No threshold can separate "unwired"
+     * from "flat", so an auto-detecting firmware read ~2.6 V, believed it, and
+     * blanked the strip. Hence: set status by hand, never infer from the signal.
+     * While disabled, the battery code compiles to stubs and battery_init()
+     * returns -ENODEV, which main() treats as non-fatal.
+     */
+    vbatt: vbatt {
+        compatible = "voltage-divider";
+        status = "okay";
+        io-channels = <&adc 0>;
+        output-ohms = <100000>;
+        full-ohms   = <200000>;
     };
 };
 

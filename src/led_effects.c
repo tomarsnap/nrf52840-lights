@@ -39,6 +39,7 @@ static uint8_t      state_g          = 0;
 static uint8_t      state_b          = 0;
 static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by settings */
 static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
+static bool         state_lockout;   /* battery critical — force output black */
 
 /* ── Persistence ─────────────────────────────────────────────────────────── */
 /*
@@ -237,7 +238,21 @@ static void led_thread_fn(void *a, void *b, void *c)
         uint8_t      b         = state_b;
         uint8_t      brightness = state_brightness;
         uint16_t     count      = state_count;
+        bool         lockout    = state_lockout;
         k_mutex_unlock(&state_mutex);
+
+        /*
+         * Battery critical. Hold the strip black and ignore the effect.
+         *
+         * This saves the LED current but NOT the WS2812 quiescent draw
+         * (~1 mA per pixel even when black), so the cell still discharges.
+         * Only the hardware switch stops that.
+         */
+        if (lockout) {
+            fill(0, 0, 0, 0);
+            k_sleep(K_MSEC(500));
+            continue;
+        }
 
         switch (effect) {
         case EFFECT_OFF:
@@ -393,6 +408,24 @@ void led_effects_set_brightness(uint8_t brightness)
     k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
 
     LOG_INF("Brightness → %d", brightness);
+}
+
+void led_effects_set_lockout(bool lockout)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_lockout = lockout;
+    k_mutex_unlock(&state_mutex);
+
+    LOG_WRN("LED output %s", lockout ? "LOCKED OUT (battery)" : "released");
+}
+
+bool led_effects_is_locked_out(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    bool lockout = state_lockout;
+    k_mutex_unlock(&state_mutex);
+
+    return lockout;
 }
 
 uint8_t led_effects_get_brightness(void)
