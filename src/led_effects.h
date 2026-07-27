@@ -8,7 +8,12 @@ typedef enum {
     EFFECT_SOLID   = 1,
     EFFECT_RAINBOW = 2,
     EFFECT_BREATHE = 3,
+    EFFECT_WORM    = 4,
 } led_effect_t;
+
+/* Keep in sync with the enum above: the highest valid effect index, used to
+ * range-check the "E" command. */
+#define EFFECT_MAX  EFFECT_WORM
 
 /* Returns 0 on success, -ENODEV if the strip device is not ready.
  * The effect thread only starts if this returns 0. */
@@ -63,3 +68,33 @@ uint8_t led_effects_get_speed(void);
  * Not persisted — a reboot clears it. */
 void led_effects_set_lockout(bool lockout);
 bool led_effects_is_locked_out(void);
+
+/*
+ * ── Ring geometry ────────────────────────────────────────────────────────────
+ *
+ * The active pixel count is split evenly into LED_RINGS equal rings (see
+ * led_animations.h). These report the resulting layout and let it be calibrated
+ * to the physical mounting.
+ */
+int led_effects_ring_count(void);   /* rings mapped (1 if count is not divisible) */
+int led_effects_ring_size(void);    /* pixels per ring                            */
+
+/* Per-ring calibration readback (for the "?" report). top is a physical pixel
+ * index; dir is +1 or -1. Returns -1 (top) / 0 (dir) for an invalid ring. */
+int led_effects_ring_top(int ring);
+int led_effects_ring_dir(int ring);
+
+/*
+ * Calibrate one ring: `top` is the physical pixel index sitting at the ring's
+ * reference point, `dir` (+1/-1) its winding direction. Persisted. Returns
+ * -EINVAL if the ring index is out of range, top is outside that ring, or dir
+ * is not +/-1. Use led_effects_identify() to find the top pixel.
+ */
+int led_effects_set_ring_cal(int ring, int top, int dir);
+
+/*
+ * Diagnostic "identify" mode: light exactly one physical pixel (and blank the
+ * rest) so a ring's top can be located. Overrides the running effect until a
+ * new effect is selected; pass a negative index to turn it off. Not persisted.
+ */
+void led_effects_identify(int pixel);

@@ -81,6 +81,34 @@ RAM cost is negligible at any realistic size. The I2S buffer is
 
 Power, not memory, is the limit that matters.
 
+### Two rings and mirroring
+
+The active pixel count is split evenly into **`LED_RINGS` (currently 2)** logical
+rings — ring 0 is the first half of the chain, ring 1 the second. This is a
+*view* over the single framebuffer, **not** a second buffer: mirrored and
+per-ring effects cost no extra pixel RAM. If the count is odd or not divisible
+(e.g. `N35`), the split degrades to one ring spanning the whole strip so effects
+still render.
+
+Effects address rings by **logical position** — "so many pixels clockwise from
+this ring's top" — and the engine maps that to a physical LED using the ring's
+calibration. An effect draws with `led_all_set()` (same position on every ring)
+or `led_ring_set()` (one ring), and never touches a physical index. See the
+drawing API in `src/led_animations.h` and `render_worm()` in
+`src/led_animations.c` as the worked example (two worms, one per ring, running
+opposite directions).
+
+**Calibration.** Because the two rings can be mounted at any rotation and wound
+either way, each ring has a **top** (which physical pixel is its 12-o'clock) and
+a **direction** (±1). Set them once per build with `K<ring>,<top>,<dir>`; they
+persist. Mirror symmetry is just the two rings calibrated with **opposite**
+directions — then `led_all_set()` reflects; same direction copies.
+
+To find a ring's top pixel, use `I<pixel>` to light one physical LED at a time
+and walk it around until it sits at the mounting's top, then read the index off
+the `?` report and feed it to `K`. `I-1` (or selecting any effect) leaves
+identify mode.
+
 ### Battery monitoring
 
 **Off by default.** Fit the divider, then set `status = "okay"` on the `vbatt`
@@ -216,12 +244,14 @@ Case-insensitive ASCII.
 
 | Command | Example | Description |
 |---|---|---|
-| `E<0-3>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe |
+| `E<0-4>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe, 4=worm |
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness. **Persisted** |
 | `S<0-255>` | `S200` | Set animation speed (0=slowest, 255=fastest). **Persisted** |
 | `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
-| `?` | `?` | Report battery, pixel count, brightness and speed |
+| `K<ring>,<top>,<dir>` | `K0,5,1` | Calibrate a ring: physical top pixel + winding (+1/−1). **Persisted** |
+| `I<pixel>` | `I5` | Identify: light one physical pixel (negative = off) |
+| `?` | `?` | Report battery, geometry and effect state |
 
 Persisted values are written to NVS ~750 ms after the last change (debounced,
 so dragging a slider causes one write, not fifty) and restored at boot. NVS
@@ -277,7 +307,7 @@ bl-led/
 └── src/
     ├── main.c                      # boot, heartbeat, crash reporter
     ├── led_animations.c            # the effects themselves — edit this to add one
-    ├── led_animations.h            # the render contract (struct led_frame)
+    ├── led_animations.h            # render contract + ring drawing API (led_frame)
     ├── led_effects.c/.h            # engine: state, persistence, threading, strip write
     ├── battery.c/.h                # SAADC gauge + critical-voltage lockout
     └── ble_service.c/.h            # NUS command handler
@@ -289,17 +319,34 @@ Effects are isolated from the engine behind a one-frame render contract, so
 adding one touches only two places and needs no knowledge of NVS, threading or
 I2S:
 
-1. Add a value to `led_effect_t` in `src/led_effects.h`.
-2. Write a `render_*()` in `src/led_animations.c` that fills the active pixels
-   and returns the delay (ms) until the next frame, then add a `case` for it to
+1. Add a value to `led_effect_t` in `src/led_effects.h` (and bump `EFFECT_MAX`).
+2. Write a `render_*()` in `src/led_animations.c` that paints the frame and
+   returns the delay (ms) until the next frame, then add a `case` for it to
    `led_render()`.
 
 The engine snapshots the live state under its lock and hands each renderer an
 immutable `struct led_frame` — `pixels`, `count`, the selected `colour`
-(`r`/`g`/`b`, set by `C`), `brightness` (`B`) and `speed` (`S`) — then flushes
-the buffer and sleeps for the returned interval. All of those are global to
-every effect; an effect uses whichever it needs and ignores the rest (the
-rainbow, for instance, synthesises its own hues and ignores the colour).
+(`r`/`g`/`b`, set by `C`), `brightness` (`B`), `speed` (`S`) and the ring
+geometry — then flushes the buffer and sleeps for the returned interval. All of
+those are global to every effect; an effect uses whichever it needs and ignores
+the rest (the rainbow, for instance, synthesises its own hues and ignores the
+colour).
+
+**Drawing.** Pick the call by intent, and let the engine handle physical
+indices:
+
+- `led_all_set(f, pos, col)` — same logical position on **every** ring. With
+  opposite per-ring direction calibration this mirrors; this is the primitive
+  for symmetric effects.
+- `led_ring_set(f, ring, pos, col)` — one ring, for effects that differ between
+  the two (see `render_worm`). Out-of-range rings are ignored, so a two-ring
+  effect is harmless on a one-ring build.
+- `led_px_set(f, i, col)` — a raw physical pixel, for whole-strip effects that
+  ignore ring boundaries.
+- `led_clear(f)` — blank the strip first if the effect lights only a few pixels.
+
+`led_ring_len(f)` / `led_ring_count(f)` report the geometry so an effect is
+written once and works at any ring size.
 
 `speed` is WLED-style: 0–255, no fixed meaning of its own. The usual way to
 consume it is `led_speed_delay(speed, fast_ms, slow_ms)`, which maps it to the

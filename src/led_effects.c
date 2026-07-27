@@ -48,6 +48,24 @@ static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by sett
 static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
 static uint8_t      state_speed      = DEFAULT_SPEED;      /* overridden by settings */
 static bool         state_lockout;   /* battery critical — force output black */
+static int32_t      state_identify   = -1;  /* diagnostic single-pixel spotlight, -1 = off */
+
+/*
+ * Ring calibration — the physical-mounting half of the geometry (see
+ * led_animations.h). base/size are derived from state_count at use time; only
+ * top and dir are stored and persisted here.
+ *
+ * top = UINT16_MAX means "not calibrated": fall back to the ring's electrical
+ * start. dir defaults to +1. Set via led_effects_set_ring_cal(), restored from
+ * NVS at boot. Reset to the defaults in led_effects_init() before load.
+ */
+#define RING_TOP_UNSET  UINT16_MAX
+static uint16_t     ring_top[LED_RINGS];
+static int8_t       ring_dir[LED_RINGS];
+
+/* Level the "identify" diagnostic lights its single pixel at — fixed and low so
+ * it is always visible regardless of the saved brightness. */
+#define IDENTIFY_LEVEL  64
 
 /* ── Persistence ─────────────────────────────────────────────────────────── */
 /*
@@ -55,6 +73,7 @@ static bool         state_lockout;   /* battery critical — force output black 
  *   led/count  uint16_t  active pixel count
  *   led/bri    uint8_t   brightness
  *   led/spd    uint8_t   animation speed
+ *   led/geo    blob      ring calibration (per-ring top index + direction)
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
  * erases and writes flash, which blocks for milliseconds, and the setters are
@@ -71,14 +90,26 @@ static bool         state_lockout;   /* battery critical — force output black 
  */
 #define SETTINGS_SAVE_DELAY  K_MSEC(750)
 
+/* On-flash layout of the ring calibration blob ("led/geo"). */
+struct geo_nv {
+    uint16_t top[LED_RINGS];
+    int8_t   dir[LED_RINGS];
+};
+
 static void settings_save_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
+
+    struct geo_nv geo;
 
     k_mutex_lock(&state_mutex, K_FOREVER);
     uint16_t count      = state_count;
     uint8_t  brightness = state_brightness;
     uint8_t  speed      = state_speed;
+    for (int i = 0; i < LED_RINGS; i++) {
+        geo.top[i] = ring_top[i];
+        geo.dir[i] = ring_dir[i];
+    }
     k_mutex_unlock(&state_mutex);
 
     int err = settings_save_one("led/count", &count, sizeof(count));
@@ -94,6 +125,11 @@ static void settings_save_fn(struct k_work *work)
     err = settings_save_one("led/spd", &speed, sizeof(speed));
     if (err) {
         LOG_ERR("Failed to persist speed: %d", err);
+    }
+
+    err = settings_save_one("led/geo", &geo, sizeof(geo));
+    if (err) {
+        LOG_ERR("Failed to persist ring calibration: %d", err);
     }
 
     LOG_INF("Settings saved: %u pixels, brightness %u, speed %u",
@@ -167,6 +203,28 @@ static int led_settings_set(const char *name, size_t len,
         return 0;
     }
 
+    if (settings_name_steq(name, "geo", &next) && !next) {
+        struct geo_nv geo;
+
+        if (len != sizeof(geo)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &geo, sizeof(geo));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Range of each top is re-validated at use time against the current
+         * ring size, so store as-is; only sanitise the direction. */
+        for (int i = 0; i < LED_RINGS; i++) {
+            ring_top[i] = geo.top[i];
+            ring_dir[i] = (geo.dir[i] < 0) ? -1 : 1;
+        }
+        LOG_INF("Restored ring calibration");
+        return 0;
+    }
+
     return -ENOENT;
 }
 
@@ -203,6 +261,23 @@ static uint16_t active_count(void)
     k_mutex_unlock(&state_mutex);
 
     return count;
+}
+
+/*
+ * Split `total` active pixels into equal rings. Returns the ring count and
+ * writes the per-ring size. If the total does not divide evenly across
+ * LED_RINGS (or is zero), it degrades to a single ring spanning the whole
+ * strip, so ring-based effects still render something sane. Pure — no locking.
+ */
+static uint8_t geometry_split(uint16_t total, uint16_t *ring_size)
+{
+    uint8_t rc = LED_RINGS;
+
+    if (rc == 0U || total == 0U || (total % rc) != 0U) {
+        rc = 1U;
+    }
+    *ring_size = total / rc;
+    return rc;
 }
 
 /*
@@ -252,7 +327,29 @@ static void led_thread_fn(void *a, void *b, void *c)
             .brightness = state_brightness,
             .speed      = state_speed,
         };
-        bool lockout = state_lockout;
+        bool    lockout  = state_lockout;
+        int32_t identify = state_identify;
+
+        /* Resolve the ring geometry for this frame: derive base/size from the
+         * active count, then apply each ring's calibrated top and direction
+         * (falling back to the electrical start if uncalibrated). */
+        uint16_t ring_size;
+        uint8_t  rc = geometry_split(frame.count, &ring_size);
+        frame.ring_count = rc;
+        for (uint8_t i = 0; i < rc; i++) {
+            uint16_t base = (uint16_t)(i * ring_size);
+            uint16_t top  = ring_top[i];
+
+            if (top < base || top >= base + ring_size) {
+                top = base;   /* uncalibrated or stale after a count change */
+            }
+            frame.rings[i] = (struct led_ring){
+                .base = base,
+                .size = ring_size,
+                .top  = top,
+                .dir  = (ring_dir[i] < 0) ? -1 : 1,
+            };
+        }
         k_mutex_unlock(&state_mutex);
 
         /*
@@ -266,6 +363,20 @@ static void led_thread_fn(void *a, void *b, void *c)
             memset(pixels, 0, sizeof(pixels));
             strip_flush(frame.count);
             k_sleep(K_MSEC(500));
+            continue;
+        }
+
+        /*
+         * Identify diagnostic: light exactly one physical pixel so a ring's top
+         * can be located, ignoring the effect until a new one is selected.
+         */
+        if (identify >= 0 && identify < STRIP_MAX_PIXELS) {
+            memset(pixels, 0, sizeof(pixels));
+            pixels[identify].r = IDENTIFY_LEVEL;
+            pixels[identify].g = IDENTIFY_LEVEL;
+            pixels[identify].b = IDENTIFY_LEVEL;
+            strip_flush(frame.count);
+            k_sleep(K_MSEC(200));
             continue;
         }
 
@@ -292,6 +403,14 @@ int led_effects_init(void)
     if (!device_is_ready(strip)) {
         LOG_ERR("LED strip not ready: %s", strip->name);
         return -ENODEV;
+    }
+
+    /* Ring calibration defaults, applied before load so a stored blob overrides
+     * them and an absent one leaves every ring uncalibrated (top = electrical
+     * start, dir = +1). */
+    for (int i = 0; i < LED_RINGS; i++) {
+        ring_top[i] = RING_TOP_UNSET;
+        ring_dir[i] = 1;
     }
 
     /* Restore the persisted pixel count. A failure here is not fatal — the
@@ -367,7 +486,8 @@ int led_effects_direct_pixel(int idx, uint8_t r, uint8_t g, uint8_t b, uint8_t b
 void led_effects_set_effect(led_effect_t effect)
 {
     k_mutex_lock(&state_mutex, K_FOREVER);
-    state_effect = effect;
+    state_effect   = effect;
+    state_identify = -1;   /* selecting an effect leaves identify mode */
     k_mutex_unlock(&state_mutex);
     LOG_INF("Effect → %d", effect);
 }
@@ -411,6 +531,93 @@ uint8_t led_effects_get_speed(void)
     k_mutex_unlock(&state_mutex);
 
     return speed;
+}
+
+/* ── Ring geometry ─────────────────────────────────────────────────────────── */
+
+int led_effects_ring_count(void)
+{
+    uint16_t ring_size;
+    return geometry_split(active_count(), &ring_size);
+}
+
+int led_effects_ring_size(void)
+{
+    uint16_t ring_size;
+    (void)geometry_split(active_count(), &ring_size);
+    return ring_size;
+}
+
+int led_effects_ring_top(int ring)
+{
+    uint16_t ring_size;
+    uint8_t  rc = geometry_split(active_count(), &ring_size);
+
+    if (ring < 0 || ring >= rc) {
+        return -1;
+    }
+
+    uint16_t base = (uint16_t)(ring * ring_size);
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint16_t top = ring_top[ring];
+    k_mutex_unlock(&state_mutex);
+
+    return (top < base || top >= base + ring_size) ? base : top;
+}
+
+int led_effects_ring_dir(int ring)
+{
+    if (ring < 0 || ring >= led_effects_ring_count()) {
+        return 0;
+    }
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    int8_t dir = ring_dir[ring];
+    k_mutex_unlock(&state_mutex);
+
+    return (dir < 0) ? -1 : 1;
+}
+
+int led_effects_set_ring_cal(int ring, int top, int dir)
+{
+    uint16_t ring_size;
+    uint8_t  rc = geometry_split(active_count(), &ring_size);
+
+    if (ring < 0 || ring >= rc) {
+        return -EINVAL;
+    }
+    if (dir != 1 && dir != -1) {
+        return -EINVAL;
+    }
+
+    uint16_t base = (uint16_t)(ring * ring_size);
+    if (top < base || top >= base + ring_size) {
+        return -EINVAL;   /* top must be a physical pixel within this ring */
+    }
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    ring_top[ring] = (uint16_t)top;
+    ring_dir[ring] = (int8_t)dir;
+    k_mutex_unlock(&state_mutex);
+
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
+    LOG_INF("Ring %d calibrated: top %d dir %+d", ring, top, dir);
+    return 0;
+}
+
+void led_effects_identify(int pixel)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_identify = (pixel >= 0 && pixel < STRIP_MAX_PIXELS) ? pixel : -1;
+    k_mutex_unlock(&state_mutex);
+
+    if (pixel >= 0) {
+        LOG_INF("Identify → pixel %d", pixel);
+    } else {
+        LOG_INF("Identify off");
+    }
 }
 
 void led_effects_set_lockout(bool lockout)

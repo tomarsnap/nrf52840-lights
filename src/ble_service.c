@@ -55,12 +55,15 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 /* ── NUS receive handler ─────────────────────────────────────────────────── */
 /*
  * Command protocol (ASCII, case-insensitive):
- *   E<0-3>          set effect  (0=off, 1=solid, 2=rainbow, 3=breathe)
+ *   E<0-4>          set effect  (0=off, 1=solid, 2=rainbow, 3=breathe, 4=worm)
  *   C<r>,<g>,<b>    set color   (0-255 per channel)
  *   B<0-255>        set brightness
  *   S<0-255>        set animation speed (0=slowest, 255=fastest)
  *   N<count>        set pixel count (1..chain-length), persisted to flash
- *   ?               report battery, pixel count, brightness and speed
+ *   K<ring>,<top>,<dir>  calibrate a ring: physical top pixel + direction (+1/-1)
+ *   I<pixel>        identify: light one physical pixel to find a ring's top
+ *                   (negative turns it off; any effect command also clears it)
+ *   ?               report battery, geometry and effect state
  */
 /*
  * Every numeric argument is range-checked BEFORE being narrowed to uint8_t.
@@ -125,7 +128,7 @@ static void on_nus_received(struct bt_conn *conn,
     switch (cmd) {
     case 'e': {
         int effect = atoi(&buf[1]);
-        if (effect >= EFFECT_OFF && effect <= EFFECT_BREATHE) {
+        if (effect >= EFFECT_OFF && effect <= EFFECT_MAX) {
             led_effects_set_effect((led_effect_t)effect);
         } else {
             LOG_WRN("Unknown effect %d", effect);
@@ -177,24 +180,54 @@ static void on_nus_received(struct bt_conn *conn,
         }
         break;
     }
+    case 'k': {
+        /* K<ring>,<top>,<dir> — calibrate a ring's physical top and winding.
+         * led_effects_set_ring_cal() range-checks all three against the
+         * current geometry, so no clamping is needed here. */
+        int ring, top, dir;
+
+        if (sscanf(&buf[1], "%d,%d,%d", &ring, &top, &dir) != 3) {
+            LOG_WRN("Bad calibration format: %s (want K<ring>,<top>,<dir>)", buf);
+        } else if (led_effects_set_ring_cal(ring, top, dir) != 0) {
+            LOG_WRN("Calibration rejected: ring %d top %d dir %d", ring, top, dir);
+        }
+        break;
+    }
+    case 'i': {
+        /* I<pixel> — spotlight one physical pixel (negative = off). Range is
+         * checked inside led_effects_identify(). */
+        led_effects_identify(atoi(&buf[1]));
+        break;
+    }
     case '?': {
         /* Battery level is also published via the standard BLE Battery
-         * Service; this is the human-readable version for a UART terminal. */
-        char out[80];
+         * Service; this is the human-readable version for a UART terminal.
+         * nus_send_all() chunks to the MTU, so a multi-line reply is fine. */
+        char out[160];
         int  mv = battery_millivolts();
-        int  n;
+        int  n  = 0;
 
         if (mv < 0) {
-            n = snprintf(out, sizeof(out), "batt: sampling\n");
+            n += snprintf(out + n, sizeof(out) - n, "batt: sampling\n");
         } else {
-            n = snprintf(out, sizeof(out),
-                         "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u\n",
-                         mv, battery_percent(),
-                         led_effects_is_locked_out() ? " LOCKOUT" : "",
-                         led_effects_pixel_count(),
-                         led_effects_get_brightness(),
-                         led_effects_get_speed());
+            n += snprintf(out + n, sizeof(out) - n,
+                          "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u\n",
+                          mv, battery_percent(),
+                          led_effects_is_locked_out() ? " LOCKOUT" : "",
+                          led_effects_pixel_count(),
+                          led_effects_get_brightness(),
+                          led_effects_get_speed());
         }
+
+        /* Ring geometry: how the strip is split and each ring's calibration. */
+        int rings = led_effects_ring_count();
+        n += snprintf(out + n, sizeof(out) - n,
+                      "rings %d x %d", rings, led_effects_ring_size());
+        for (int i = 0; i < rings && n < (int)sizeof(out); i++) {
+            n += snprintf(out + n, sizeof(out) - n, " | r%d top %d dir %+d",
+                          i, led_effects_ring_top(i), led_effects_ring_dir(i));
+        }
+        n += snprintf(out + n, sizeof(out) - n, "\n");
 
         if (n > 0) {
             nus_send_all(conn, out, (uint16_t)n);

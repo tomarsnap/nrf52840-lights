@@ -77,9 +77,11 @@ static uint32_t render_rainbow(const struct led_frame *f)
         f->pixels[i].g = led_scale(hg, f->brightness);
         f->pixels[i].b = led_scale(hb, f->brightness);
     }
-    offset++;
+    /* Speed shortens the frame delay through the low/normal range, then (past
+     * the midpoint, once the delay hits the refresh floor) spins the hue faster
+     * per frame so max speed is genuinely fast. */
+    offset += led_speed_step(f->speed, 8U);
 
-    /* Speed sets the frame rate: ~60 ms/frame at the slowest, ~4 ms flat out. */
     return led_speed_delay(f->speed, 4U, 60U);
 }
 
@@ -92,7 +94,7 @@ static uint32_t render_breathe(const struct led_frame *f)
     uint8_t wave = (step < 128U)
                  ? (uint8_t)(step * 2U)
                  : (uint8_t)((255U - step) * 2U);
-    step = (step + 1U) & 0xFFU;
+    step = (uint16_t)((step + led_speed_step(f->speed, 6U)) & 0xFFU);
 
     uint8_t effective_bri = led_scale(wave, f->brightness);
 
@@ -106,6 +108,54 @@ static uint32_t render_breathe(const struct led_frame *f)
     return led_speed_delay(f->speed, 2U, 40U);
 }
 
+/*
+ * Two worms, one per ring, crawling in opposite directions — the worked
+ * example for the per-ring drawing API. Because it addresses each ring
+ * separately with led_ring_set(), the geometry engine places each worm using
+ * that ring's own calibrated top and winding direction, so they stay visually
+ * aligned however the rings are physically mounted. On a single-ring build the
+ * ring-1 writes are simply ignored and one worm crawls.
+ *
+ * To make it a MIRROR instead (one worm reflected onto both rings), the two
+ * led_ring_set() calls collapse to a single led_all_set(f, p0, col).
+ */
+static uint32_t render_worm(const struct led_frame *f)
+{
+    static uint16_t head;                 /* advances one pixel per frame */
+
+    const uint16_t len  = led_ring_len(f);   /* pixels in one ring */
+    const uint16_t tail = 5U;                /* worm length, head included */
+
+    if (len == 0U) {
+        return 50U;
+    }
+
+    led_clear(f);                            /* dark background; worm lights a few */
+
+    /* Ring 0 head runs forward; ring 1 head runs the opposite way, so the two
+     * worms chase around in mirror directions ("opposite timing"). */
+    uint16_t head0 = head;
+    uint16_t head1 = (uint16_t)((len - head % len) % len);
+
+    for (uint16_t t = 0; t < tail && t < len; t++) {
+        /* Head is brightest; the tail fades out behind it. */
+        uint8_t fade = (uint8_t)(255U - t * (255U / tail));
+        uint8_t bri  = led_scale(fade, f->brightness);
+        struct led_rgb col = {
+            .r = led_scale(f->r, bri),
+            .g = led_scale(f->g, bri),
+            .b = led_scale(f->b, bri),
+        };
+
+        led_ring_set(f, 0, (uint16_t)((head0 + len - t) % len), col); /* tail trails +1 */
+        led_ring_set(f, 1, (uint16_t)((head1 + t) % len),       col); /* tail trails -1 */
+    }
+
+    head = (uint16_t)((head + led_speed_step(f->speed, 4U)) % len);
+
+    return led_speed_delay(f->speed, 8U, 80U);
+}
+
 /* ── Dispatch ────────────────────────────────────────────────────────────── */
 
 uint32_t led_render(const struct led_frame *f)
@@ -115,6 +165,7 @@ uint32_t led_render(const struct led_frame *f)
     case EFFECT_SOLID:   return render_solid(f);
     case EFFECT_RAINBOW: return render_rainbow(f);
     case EFFECT_BREATHE: return render_breathe(f);
+    case EFFECT_WORM:    return render_worm(f);
     default:             return render_off(f);
     }
 }
