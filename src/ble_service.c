@@ -58,8 +58,9 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   E<0-3>          set effect  (0=off, 1=solid, 2=rainbow, 3=breathe)
  *   C<r>,<g>,<b>    set color   (0-255 per channel)
  *   B<0-255>        set brightness
+ *   S<0-255>        set animation speed (0=slowest, 255=fastest)
  *   N<count>        set pixel count (1..chain-length), persisted to flash
- *   ?               report battery, pixel count and brightness
+ *   ?               report battery, pixel count, brightness and speed
  */
 /*
  * Every numeric argument is range-checked BEFORE being narrowed to uint8_t.
@@ -153,6 +154,16 @@ static void on_nus_received(struct bt_conn *conn,
         }
         break;
     }
+    case 's': {
+        int spd = atoi(&buf[1]);
+
+        if (!in_byte_range(spd)) {
+            LOG_WRN("Bad speed %d (valid 0-255)", spd);
+        } else {
+            led_effects_set_speed((uint8_t)spd);
+        }
+        break;
+    }
     case 'n': {
         /* Range-check before narrowing: a value above UINT16_MAX would
          * otherwise wrap into the valid range. */
@@ -177,11 +188,12 @@ static void on_nus_received(struct bt_conn *conn,
             n = snprintf(out, sizeof(out), "batt: sampling\n");
         } else {
             n = snprintf(out, sizeof(out),
-                         "batt %d mV (%u%%)%s | pixels %d | bri %u\n",
+                         "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u\n",
                          mv, battery_percent(),
                          led_effects_is_locked_out() ? " LOCKOUT" : "",
                          led_effects_pixel_count(),
-                         led_effects_get_brightness());
+                         led_effects_get_brightness(),
+                         led_effects_get_speed());
         }
 
         if (n > 0) {

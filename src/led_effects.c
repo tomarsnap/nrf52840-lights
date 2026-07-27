@@ -1,4 +1,5 @@
 #include "led_effects.h"
+#include "led_animations.h"
 
 #include <errno.h>
 #include <string.h>
@@ -28,6 +29,12 @@ LOG_MODULE_REGISTER(led_effects, LOG_LEVEL_INF);
  */
 #define DEFAULT_BRIGHTNESS  64
 
+/*
+ * Animation speed used until a value is restored from NVS. 128 = middle of the
+ * 0-255 range, so effects animate at a moderate rate out of the box.
+ */
+#define DEFAULT_SPEED       128
+
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 static struct led_rgb pixels[STRIP_MAX_PIXELS];
 
@@ -39,6 +46,7 @@ static uint8_t      state_g          = 0;
 static uint8_t      state_b          = 0;
 static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by settings */
 static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
+static uint8_t      state_speed      = DEFAULT_SPEED;      /* overridden by settings */
 static bool         state_lockout;   /* battery critical — force output black */
 
 /* ── Persistence ─────────────────────────────────────────────────────────── */
@@ -46,6 +54,7 @@ static bool         state_lockout;   /* battery critical — force output black 
  * Persisted under "led/" in NVS via the settings subsystem:
  *   led/count  uint16_t  active pixel count
  *   led/bri    uint8_t   brightness
+ *   led/spd    uint8_t   animation speed
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
  * erases and writes flash, which blocks for milliseconds, and the setters are
@@ -69,6 +78,7 @@ static void settings_save_fn(struct k_work *work)
     k_mutex_lock(&state_mutex, K_FOREVER);
     uint16_t count      = state_count;
     uint8_t  brightness = state_brightness;
+    uint8_t  speed      = state_speed;
     k_mutex_unlock(&state_mutex);
 
     int err = settings_save_one("led/count", &count, sizeof(count));
@@ -81,7 +91,13 @@ static void settings_save_fn(struct k_work *work)
         LOG_ERR("Failed to persist brightness: %d", err);
     }
 
-    LOG_INF("Settings saved: %u pixels, brightness %u", count, brightness);
+    err = settings_save_one("led/spd", &speed, sizeof(speed));
+    if (err) {
+        LOG_ERR("Failed to persist speed: %d", err);
+    }
+
+    LOG_INF("Settings saved: %u pixels, brightness %u, speed %u",
+            count, brightness, speed);
 }
 
 static K_WORK_DELAYABLE_DEFINE(settings_save_work, settings_save_fn);
@@ -133,18 +149,31 @@ static int led_settings_set(const char *name, size_t len,
         return 0;
     }
 
+    if (settings_name_steq(name, "spd", &next) && !next) {
+        uint8_t speed;
+
+        if (len != sizeof(speed)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &speed, sizeof(speed));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Any uint8_t is a valid speed, so no range check needed. */
+        state_speed = speed;
+        LOG_INF("Restored speed: %u", speed);
+        return 0;
+    }
+
     return -ENOENT;
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(led_effects, "led", NULL,
                                led_settings_set, NULL, NULL);
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
-
-static uint8_t scale(uint8_t val, uint8_t brightness)
-{
-    return (uint16_t)val * brightness / 255U;
-}
+/* ── Strip plumbing ──────────────────────────────────────────────────────── */
 
 /*
  * NOTE: do not add an i2s_trigger(DROP) here.
@@ -195,30 +224,11 @@ static int fill(uint8_t r, uint8_t g, uint8_t b, uint8_t bri)
     uint16_t count = active_count();
 
     for (uint16_t i = 0; i < count; i++) {
-        pixels[i].r = scale(r, bri);
-        pixels[i].g = scale(g, bri);
-        pixels[i].b = scale(b, bri);
+        pixels[i].r = led_scale(r, bri);
+        pixels[i].g = led_scale(g, bri);
+        pixels[i].b = led_scale(b, bri);
     }
     return strip_flush(count);
-}
-
-/* Simple HSV→RGB: hue 0–255, sat=val=255 */
-static void hsv_to_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    uint8_t region = hue / 43U;
-    uint8_t rem    = (hue - region * 43U) * 6U;
-    uint8_t p      = 0U;
-    uint8_t q      = (uint16_t)255U * (255U - rem) >> 8U;
-    uint8_t t      = (uint16_t)255U * rem >> 8U;
-
-    switch (region) {
-    case 0: *r = 255; *g = t;   *b = p;   break;
-    case 1: *r = q;   *g = 255; *b = p;   break;
-    case 2: *r = p;   *g = 255; *b = t;   break;
-    case 3: *r = p;   *g = q;   *b = 255; break;
-    case 4: *r = t;   *g = p;   *b = 255; break;
-    default:*r = 255; *g = p;   *b = q;   break;
-    }
 }
 
 /* ── LED thread ──────────────────────────────────────────────────────────── */
@@ -227,18 +237,22 @@ static void led_thread_fn(void *a, void *b, void *c)
 {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
 
-    uint8_t  rainbow_offset = 0;
-    uint16_t breathe_step   = 0;
-
     while (1) {
+        /* Snapshot the live state under the lock, then release it: the render
+         * below must not hold the mutex (it can run for a whole frame) and an
+         * effect only ever sees one consistent, race-free view of the state. */
         k_mutex_lock(&state_mutex, K_FOREVER);
-        led_effect_t effect    = state_effect;
-        uint8_t      r         = state_r;
-        uint8_t      g         = state_g;
-        uint8_t      b         = state_b;
-        uint8_t      brightness = state_brightness;
-        uint16_t     count      = state_count;
-        bool         lockout    = state_lockout;
+        struct led_frame frame = {
+            .pixels     = pixels,
+            .count      = state_count,
+            .effect     = state_effect,
+            .r          = state_r,
+            .g          = state_g,
+            .b          = state_b,
+            .brightness = state_brightness,
+            .speed      = state_speed,
+        };
+        bool lockout = state_lockout;
         k_mutex_unlock(&state_mutex);
 
         /*
@@ -249,51 +263,20 @@ static void led_thread_fn(void *a, void *b, void *c)
          * Only the hardware switch stops that.
          */
         if (lockout) {
-            fill(0, 0, 0, 0);
+            memset(pixels, 0, sizeof(pixels));
+            strip_flush(frame.count);
             k_sleep(K_MSEC(500));
             continue;
         }
 
-        switch (effect) {
-        case EFFECT_OFF:
-            fill(0, 0, 0, 0);
-            k_sleep(K_MSEC(100));
-            break;
+        /* All the actual animation lives in led_animations.c. It fills the
+         * active pixels and tells us how long to wait for the next frame; we
+         * push the buffer to the strip (blanking any pixels past the active
+         * count — see strip_flush) and sleep. */
+        uint32_t delay_ms = led_render(&frame);
 
-        case EFFECT_SOLID:
-            fill(r, g, b, brightness);
-            k_sleep(K_MSEC(100));
-            break;
-
-        case EFFECT_RAINBOW:
-            /* Spread one full hue cycle over the ACTIVE pixels, so the
-             * gradient wraps correctly whatever the ring size. */
-            for (uint16_t i = 0; i < count; i++) {
-                uint8_t hue = rainbow_offset + (uint8_t)(i * 256U / count);
-                uint8_t hr, hg, hb;
-                hsv_to_rgb(hue, &hr, &hg, &hb);
-                pixels[i].r = scale(hr, brightness);
-                pixels[i].g = scale(hg, brightness);
-                pixels[i].b = scale(hb, brightness);
-            }
-            strip_flush(count);
-            rainbow_offset++;
-            k_sleep(K_MSEC(30));
-            break;
-
-        case EFFECT_BREATHE: {
-            /* triangle wave 0→254→0 over 256 steps */
-            uint8_t wave = (breathe_step < 128U)
-                         ? (uint8_t)(breathe_step * 2U)
-                         : (uint8_t)((255U - breathe_step) * 2U);
-            breathe_step = (breathe_step + 1U) & 0xFFU;
-
-            uint8_t effective_bri = scale(wave, brightness);
-            fill(r, g, b, effective_bri);
-            k_sleep(K_MSEC(20));
-            break;
-        }
-        }
+        strip_flush(frame.count);
+        k_sleep(K_MSEC(delay_ms));
     }
 }
 
@@ -374,9 +357,9 @@ int led_effects_direct_pixel(int idx, uint8_t r, uint8_t g, uint8_t b, uint8_t b
     }
 
     memset(pixels, 0, sizeof(pixels));
-    pixels[idx].r = scale(r, bri);
-    pixels[idx].g = scale(g, bri);
-    pixels[idx].b = scale(b, bri);
+    pixels[idx].r = led_scale(r, bri);
+    pixels[idx].g = led_scale(g, bri);
+    pixels[idx].b = led_scale(b, bri);
 
     return strip_flush(count);
 }
@@ -408,6 +391,26 @@ void led_effects_set_brightness(uint8_t brightness)
     k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
 
     LOG_INF("Brightness → %d", brightness);
+}
+
+void led_effects_set_speed(uint8_t speed)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_speed = speed;
+    k_mutex_unlock(&state_mutex);
+
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
+    LOG_INF("Speed → %d", speed);
+}
+
+uint8_t led_effects_get_speed(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint8_t speed = state_speed;
+    k_mutex_unlock(&state_mutex);
+
+    return speed;
 }
 
 void led_effects_set_lockout(bool lockout)

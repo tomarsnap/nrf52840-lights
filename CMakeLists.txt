@@ -10,6 +10,7 @@ project(bl_led VERSION 0.1.0)
 target_sources(app PRIVATE
     src/main.c
     src/led_effects.c
+    src/led_animations.c
     src/ble_service.c
     src/battery.c
 )

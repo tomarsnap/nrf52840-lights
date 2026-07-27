@@ -219,8 +219,9 @@ Case-insensitive ASCII.
 | `E<0-3>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe |
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness. **Persisted** |
+| `S<0-255>` | `S200` | Set animation speed (0=slowest, 255=fastest). **Persisted** |
 | `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
-| `?` | `?` | Report battery, pixel count and brightness |
+| `?` | `?` | Report battery, pixel count, brightness and speed |
 
 Persisted values are written to NVS ~750 ms after the last change (debounced,
 so dragging a slider causes one write, not fifty) and restored at boot. NVS
@@ -275,6 +276,35 @@ bl-led/
 ├── scripts/setup.sh
 └── src/
     ├── main.c                      # boot, heartbeat, crash reporter
-    ├── led_effects.c/.h            # effects engine
+    ├── led_animations.c            # the effects themselves — edit this to add one
+    ├── led_animations.h            # the render contract (struct led_frame)
+    ├── led_effects.c/.h            # engine: state, persistence, threading, strip write
+    ├── battery.c/.h                # SAADC gauge + critical-voltage lockout
     └── ble_service.c/.h            # NUS command handler
 ```
+
+### Adding an effect
+
+Effects are isolated from the engine behind a one-frame render contract, so
+adding one touches only two places and needs no knowledge of NVS, threading or
+I2S:
+
+1. Add a value to `led_effect_t` in `src/led_effects.h`.
+2. Write a `render_*()` in `src/led_animations.c` that fills the active pixels
+   and returns the delay (ms) until the next frame, then add a `case` for it to
+   `led_render()`.
+
+The engine snapshots the live state under its lock and hands each renderer an
+immutable `struct led_frame` — `pixels`, `count`, the selected `colour`
+(`r`/`g`/`b`, set by `C`), `brightness` (`B`) and `speed` (`S`) — then flushes
+the buffer and sleeps for the returned interval. All of those are global to
+every effect; an effect uses whichever it needs and ignores the rest (the
+rainbow, for instance, synthesises its own hues and ignores the colour).
+
+`speed` is WLED-style: 0–255, no fixed meaning of its own. The usual way to
+consume it is `led_speed_delay(speed, fast_ms, slow_ms)`, which maps it to the
+frame delay you return, but an effect is free to use it however it likes (e.g.
+to scale how far it advances per frame). A renderer runs on a single thread, so
+per-effect animation phase can be a plain file-scope `static` (see
+`render_rainbow`). Pixels past the active count are blanked by the engine, so an
+effect only ever fills `pixels[0 .. count-1]`.

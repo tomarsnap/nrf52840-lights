@@ -50,6 +50,15 @@ void led_effects_set_color(uint8_t r, uint8_t g, uint8_t b);
 void led_effects_set_brightness(uint8_t brightness);
 uint8_t led_effects_get_brightness(void);
 
+/*
+ * Animation speed, 0-255 (WLED-style): 0 slowest, 255 fastest, 128 the default.
+ * It has no fixed meaning — each effect decides how to use it, typically via
+ * led_speed_delay() in led_animations.h. Persisted and restored at boot, like
+ * brightness. Non-animating effects (solid, off) ignore it.
+ */
+void led_effects_set_speed(uint8_t speed);
+uint8_t led_effects_get_speed(void);
+
 /* Force the strip black regardless of effect, for a critical battery.
  * Not persisted — a reboot clears it. */
 void led_effects_set_lockout(bool lockout);
