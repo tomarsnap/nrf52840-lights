@@ -18,7 +18,7 @@ using the Nordic UART Service (NUS).
 
 | WS2812 ring | Connect to |
 |---|---|
-| DATA | **P0.06** on the board |
+| DATA | **P0.29** on the board |
 | 5V | **External 5 V supply** — see below |
 | GND | Supply ground **and** board GND (must be common) |
 
@@ -41,7 +41,7 @@ using the Nordic UART Service (NUS).
 > This is the same failure as above by another route: a collapsed rail is
 > electrically an unpowered strip. Use a separate supply and share ground.
 
-Ground **must** be shared: P0.06 swings 0–3.3 V relative to the board's
+Ground **must** be shared: P0.29 swings 0–3.3 V relative to the board's
 ground, so the ring needs that same reference to read the data line.
 
 Current is the main constraint as the ring grows — roughly 60 mA per pixel at

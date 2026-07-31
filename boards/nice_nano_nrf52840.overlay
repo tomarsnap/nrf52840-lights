@@ -7,7 +7,7 @@
  * SPIM1 and SPIM3, with the strip disconnected. That crash is unexplained.
  * I2S drives the same pin through a separate path and works.
  *
- * Data goes out on P0.06.
+ * Data goes out on P0.29.
  *
  * I2S requires SCK and LRCK to be assigned even though WS2812 uses only the
  * data line, so they are parked on P0.22 and P0.24 — free on this board and
@@ -133,7 +133,7 @@
         group1 {
             psels = <NRF_PSEL(I2S_SCK_M, 0, 22)>,
                     <NRF_PSEL(I2S_LRCK_M, 0, 24)>,
-                    <NRF_PSEL(I2S_SDOUT, 0, 6)>;
+                    <NRF_PSEL(I2S_SDOUT, 0, 29)>;
         };
     };
 };
