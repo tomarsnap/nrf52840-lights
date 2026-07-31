@@ -519,6 +519,15 @@ void led_effects_set_effect(led_effect_t effect)
     LOG_INF("Effect → %d", effect);
 }
 
+led_effect_t led_effects_get_effect(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    led_effect_t effect = state_effect;
+    k_mutex_unlock(&state_mutex);
+
+    return effect;
+}
+
 void led_effects_set_color(uint8_t r, uint8_t g, uint8_t b)
 {
     k_mutex_lock(&state_mutex, K_FOREVER);
@@ -527,6 +536,15 @@ void led_effects_set_color(uint8_t r, uint8_t g, uint8_t b)
     state_b = b;
     k_mutex_unlock(&state_mutex);
     LOG_INF("Color → %d,%d,%d", r, g, b);
+}
+
+void led_effects_get_color(uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    *r = state_r;
+    *g = state_g;
+    *b = state_b;
+    k_mutex_unlock(&state_mutex);
 }
 
 void led_effects_set_brightness(uint8_t brightness)

@@ -209,22 +209,32 @@ static void on_nus_received(struct bt_conn *conn,
         /* Battery level is also published via the standard BLE Battery
          * Service; this is the human-readable version for a UART terminal.
          * nus_send_all() chunks to the MTU, so a multi-line reply is fine. */
-        char out[160];
-        int  mv = battery_millivolts();
-        int  n  = 0;
+        char    out[224];
+        int     mv = battery_millivolts();
+        int     n  = 0;
+        uint8_t cr, cg, cb;
+
+        led_effects_get_color(&cr, &cg, &cb);
 
         if (mv < 0) {
-            n += snprintf(out + n, sizeof(out) - n, "batt: sampling\n");
+            n += snprintf(out + n, sizeof(out) - n, "batt: sampling");
         } else {
-            n += snprintf(out + n, sizeof(out) - n,
-                          "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u | auto %u\n",
+            n += snprintf(out + n, sizeof(out) - n, "batt %d mV (%u%%)%s",
                           mv, battery_percent(),
-                          led_effects_is_locked_out() ? " LOCKOUT" : "",
-                          led_effects_pixel_count(),
-                          led_effects_get_brightness(),
-                          led_effects_get_speed(),
-                          led_effects_get_auto_color() ? 1U : 0U);
+                          led_effects_is_locked_out() ? " LOCKOUT" : "");
         }
+
+        /* Everything an app needs to sync its UI on connect. Keep this a stable,
+         * parseable "key value" grammar — see PROTOCOL.md, which the companion
+         * app relies on; do not reorder or rename fields without updating it. */
+        n += snprintf(out + n, sizeof(out) - n,
+                      " | pixels %d | effect %d | color %u,%u,%u | bri %u | spd %u | auto %u\n",
+                      led_effects_pixel_count(),
+                      (int)led_effects_get_effect(),
+                      cr, cg, cb,
+                      led_effects_get_brightness(),
+                      led_effects_get_speed(),
+                      led_effects_get_auto_color() ? 1U : 0U);
 
         /* Ring geometry: how the strip is split and each ring's calibration. */
         int rings = led_effects_ring_count();

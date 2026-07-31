@@ -234,6 +234,11 @@ The board reboots into the new firmware automatically.
 Advertises as **`BL-LED`**. Connect with any BLE UART app — **Serial Bluetooth
 Terminal** or **nRF Toolbox → UART** are far easier than nRF Connect for this.
 
+> Building a client (e.g. the planned companion app)? See **[`PROTOCOL.md`](PROTOCOL.md)**
+> — the authoritative wire spec: NUS UUIDs, MTU chunking, the exact command and
+> `?`-response grammar, and known limitations. The table below is the
+> human-facing summary; `PROTOCOL.md` is what an app should be written against.
+
 In nRF Connect: expand **Nordic UART Service**, tap the ↑ icon on the
 characteristic ending `...0002` (the writable one), and **switch the format to
 `Text (UTF-8)`** before sending — it defaults to hex.
@@ -300,6 +305,7 @@ prove the firmware is running — it may be displaying a stale frame.
 ```
 bl-led/
 ├── CMakeLists.txt
+├── PROTOCOL.md                     # BLE wire spec — write app clients against this
 ├── prj.conf                        # Kconfig — heavily commented, load-bearing
 ├── boards/
 │   ├── nice_nano_nrf52840.overlay  # I2S + WS2812 node, console, entropy
