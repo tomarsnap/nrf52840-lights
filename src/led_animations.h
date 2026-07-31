@@ -92,6 +92,17 @@ static inline uint8_t led_scale(uint8_t val, uint8_t brightness)
 }
 
 /*
+ * Compile-time ceiling for per-effect per-pixel state arrays (sparkle decay,
+ * firefly lifetimes, confetti hues). Must be >= the DTS chain_length — the
+ * engine's own pixel buffer uses that same length — so an effect's state array
+ * is never indexed past its end whatever the active count. Kept generous; the
+ * cost is one byte of BSS per pixel per array, nothing on this SoC.
+ */
+#ifndef LED_MAX_PIXELS
+#define LED_MAX_PIXELS 256
+#endif
+
+/*
  * HSV→RGB at full saturation and value: map a 0-255 hue to an RGB triple. Used
  * by the rainbow effect and by the engine's auto-colour cycling to pick vivid,
  * never-muddy colours (a plain random RGB is often dim or grey). Shared here
@@ -113,6 +124,54 @@ static inline void led_hsv_to_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *
     case 4: *r = t;   *g = p;   *b = 255; break;
     default:*r = 255; *g = p;   *b = q;   break;
     }
+}
+
+/*
+ * Approximate the 0-255 hue of an RGB triple (saturation and value discarded) —
+ * the rough inverse of led_hsv_to_rgb. Lets an effect start flowing around the
+ * hue wheel from the user's global colour instead of an arbitrary hue, so the
+ * picker still tints effects that synthesise their own gradient (aurora,
+ * fireflies, pinwheel). A grey/white input has no hue and returns 0.
+ */
+static inline uint8_t led_rgb_hue(uint8_t r, uint8_t g, uint8_t b)
+{
+    uint8_t max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    uint8_t min = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    uint8_t delta = (uint8_t)(max - min);
+
+    if (delta == 0U) {
+        return 0U;   /* achromatic */
+    }
+
+    /* 43 ≈ 60° on the 0-255 wheel; each primary owns a 120° (85-unit) sector. */
+    int32_t hue;
+    if (max == r) {
+        hue = 0   + (int32_t)43 * ((int)g - (int)b) / delta;
+    } else if (max == g) {
+        hue = 85  + (int32_t)43 * ((int)b - (int)r) / delta;
+    } else {
+        hue = 171 + (int32_t)43 * ((int)r - (int)g) / delta;
+    }
+    if (hue < 0) {
+        hue += 256;
+    }
+    return (uint8_t)(hue & 0xFF);
+}
+
+/*
+ * Blend colour a→b by t/255 (0 = all a, 255 = all b), per channel — the
+ * two-colour gradient primitive. led_scale only fades a single colour toward
+ * black; this interpolates between any two, which is what a gradient "around
+ * the ring" or a "push toward white" sparkle needs.
+ */
+static inline struct led_rgb led_lerp(struct led_rgb a, struct led_rgb b, uint8_t t)
+{
+    struct led_rgb o = {0};   /* zero any optional scratch field, like a literal */
+
+    o.r = (uint8_t)(((uint16_t)a.r * (255U - t) + (uint16_t)b.r * t) / 255U);
+    o.g = (uint8_t)(((uint16_t)a.g * (255U - t) + (uint16_t)b.g * t) / 255U);
+    o.b = (uint8_t)(((uint16_t)a.b * (255U - t) + (uint16_t)b.b * t) / 255U);
+    return o;
 }
 
 /*

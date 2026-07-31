@@ -4,16 +4,23 @@
 #include <stdint.h>
 
 typedef enum {
-    EFFECT_OFF     = 0,
-    EFFECT_SOLID   = 1,
-    EFFECT_RAINBOW = 2,
-    EFFECT_BREATHE = 3,
-    EFFECT_WORM    = 4,
+    EFFECT_OFF       = 0,
+    EFFECT_SOLID     = 1,
+    EFFECT_RAINBOW   = 2,
+    EFFECT_BREATHE   = 3,
+    EFFECT_WORM      = 4,
+    EFFECT_SPARKLE   = 5,   /* sparkle + travelling gradient, ring 1 randomised */
+    EFFECT_AURORA    = 6,   /* slow flowing gradient, tinted by the global colour */
+    EFFECT_METEOR    = 7,   /* twin meteors crossing, one per ring, mirrored      */
+    EFFECT_HEARTBEAT = 8,   /* lub-dub brightness pulse in the global colour      */
+    EFFECT_FIREFLY   = 9,   /* sparse independent twinkles fading in and out      */
+    EFFECT_PINWHEEL  = 10,  /* counter-rotating colour wedges                     */
+    EFFECT_CONFETTI  = 11,  /* random self-coloured pops (ignores global colour)  */
 } led_effect_t;
 
 /* Keep in sync with the enum above: the highest valid effect index, used to
  * range-check the "E" command. */
-#define EFFECT_MAX  EFFECT_WORM
+#define EFFECT_MAX  EFFECT_CONFETTI
 
 /* Returns 0 on success, -ENODEV if the strip device is not ready.
  * The effect thread only starts if this returns 0. */
