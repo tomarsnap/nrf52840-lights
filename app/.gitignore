@@ -1,0 +1,33 @@
+# Android / Gradle build artifacts — keep the repo clean when the app lands here.
+
+# Built output
+build/
+*/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# Local, machine-specific config (SDK path, signing) — never commit
+local.properties
+*.keystore
+*.jks
+keystore.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+.cxx/
+captures/
+.externalNativeBuild/
+
+# Misc
+*.log
+.DS_Store

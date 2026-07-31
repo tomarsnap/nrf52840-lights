@@ -310,6 +310,7 @@ bl-led/
 ├── boards/
 │   ├── nice_nano_nrf52840.overlay  # I2S + WS2812 node, console, entropy
 │   └── nicekeyboards/nice_nano/    # custom board definition
+├── app/                            # companion Android app — scaffold, not started
 ├── scripts/setup.sh
 └── src/
     ├── main.c                      # boot, heartbeat, crash reporter
