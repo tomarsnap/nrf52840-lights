@@ -60,6 +60,7 @@ struct led_frame {
     uint8_t         r, g, b;    /* current colour (for solid/breathe)      */
     uint8_t         brightness; /* master brightness, 0-255                */
     uint8_t         speed;      /* animation speed, 0-255 (WLED-style)     */
+    bool            auto_color; /* re-randomise colour each cycle (see below) */
 
     /* Geometry snapshot — use the drawing helpers below (led_ring_set,
      * led_all_set, ...) rather than touching this directly. */
@@ -88,6 +89,30 @@ uint32_t led_render(const struct led_frame *f);
 static inline uint8_t led_scale(uint8_t val, uint8_t brightness)
 {
     return (uint16_t)val * brightness / 255U;
+}
+
+/*
+ * HSV→RGB at full saturation and value: map a 0-255 hue to an RGB triple. Used
+ * by the rainbow effect and by the engine's auto-colour cycling to pick vivid,
+ * never-muddy colours (a plain random RGB is often dim or grey). Shared here
+ * rather than duplicated, like led_scale.
+ */
+static inline void led_hsv_to_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    uint8_t region = hue / 43U;
+    uint8_t rem    = (hue - region * 43U) * 6U;
+    uint8_t p      = 0U;
+    uint8_t q      = (uint16_t)255U * (255U - rem) >> 8U;
+    uint8_t t      = (uint16_t)255U * rem >> 8U;
+
+    switch (region) {
+    case 0: *r = 255; *g = t;   *b = p;   break;
+    case 1: *r = q;   *g = 255; *b = p;   break;
+    case 2: *r = p;   *g = 255; *b = t;   break;
+    case 3: *r = p;   *g = q;   *b = 255; break;
+    case 4: *r = t;   *g = p;   *b = 255; break;
+    default:*r = 255; *g = p;   *b = q;   break;
+    }
 }
 
 /*
@@ -206,6 +231,26 @@ static inline void led_px_set(const struct led_frame *f, uint16_t i,
 {
     if (i < f->count) {
         f->pixels[i] = col;
+    }
+}
+
+/*
+ * Auto colour cycling. When the user has enabled the mode (f->auto_color is
+ * set), advance the global colour to a fresh random one; otherwise do nothing.
+ *
+ * An effect calls this at a natural CYCLE boundary — the instant its animation
+ * returns to where it started (a rainbow wrap, a completed breath, one worm
+ * lap). The new colour lands on the next frame, so it changes in step with the
+ * motion rather than jerking mid-stroke, and pick the boundary where the strip
+ * is momentarily dark (e.g. the bottom of a breath) for a seamless swap.
+ *
+ * Always safe to call: it is a no-op when the mode is off. Effects that do not
+ * read the global colour at all (rainbow) simply never call it.
+ */
+static inline void led_cycle_color(const struct led_frame *f)
+{
+    if (f->auto_color) {
+        led_effects_cycle_color();
     }
 }
 

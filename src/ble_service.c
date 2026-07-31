@@ -59,6 +59,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   C<r>,<g>,<b>    set color   (0-255 per channel)
  *   B<0-255>        set brightness
  *   S<0-255>        set animation speed (0=slowest, 255=fastest)
+ *   A<0|1>          auto colour cycle: re-randomise colour each animation cycle
  *   N<count>        set pixel count (1..chain-length), persisted to flash
  *   K<ring>,<top>,<dir>  calibrate a ring: physical top pixel + direction (+1/-1)
  *   I<pixel>        identify: light one physical pixel to find a ring's top
@@ -167,6 +168,11 @@ static void on_nus_received(struct bt_conn *conn,
         }
         break;
     }
+    case 'a': {
+        /* A0 / A1 — toggle auto colour cycling. Treat any non-zero as on. */
+        led_effects_set_auto_color(atoi(&buf[1]) != 0);
+        break;
+    }
     case 'n': {
         /* Range-check before narrowing: a value above UINT16_MAX would
          * otherwise wrap into the valid range. */
@@ -211,12 +217,13 @@ static void on_nus_received(struct bt_conn *conn,
             n += snprintf(out + n, sizeof(out) - n, "batt: sampling\n");
         } else {
             n += snprintf(out + n, sizeof(out) - n,
-                          "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u\n",
+                          "batt %d mV (%u%%)%s | pixels %d | bri %u | spd %u | auto %u\n",
                           mv, battery_percent(),
                           led_effects_is_locked_out() ? " LOCKOUT" : "",
                           led_effects_pixel_count(),
                           led_effects_get_brightness(),
-                          led_effects_get_speed());
+                          led_effects_get_speed(),
+                          led_effects_get_auto_color() ? 1U : 0U);
         }
 
         /* Ring geometry: how the strip is split and each ring's calibration. */

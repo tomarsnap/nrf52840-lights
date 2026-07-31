@@ -248,6 +248,7 @@ Case-insensitive ASCII.
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness. **Persisted** |
 | `S<0-255>` | `S200` | Set animation speed (0=slowest, 255=fastest). **Persisted** |
+| `A<0\|1>` | `A1` | Auto colour cycle: re-randomise the colour each animation cycle. **Persisted** |
 | `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
 | `K<ring>,<top>,<dir>` | `K0,5,1` | Calibrate a ring: physical top pixel + winding (+1/−1). **Persisted** |
 | `I<pixel>` | `I5` | Identify: light one physical pixel (negative = off) |
@@ -344,6 +345,12 @@ indices:
 - `led_px_set(f, i, col)` — a raw physical pixel, for whole-strip effects that
   ignore ring boundaries.
 - `led_clear(f)` — blank the strip first if the effect lights only a few pixels.
+- `led_cycle_color(f)` — call at a natural **cycle boundary** (the instant the
+  animation returns to its start). When the user has enabled auto colour cycling
+  (`A1`), this swaps in a fresh random colour for the next cycle; otherwise it
+  does nothing, so it is always safe to call. Put it where the strip is dark for
+  a seamless swap (see the wrap in `render_breathe`). Effects that ignore the
+  global colour (rainbow) need not call it.
 
 `led_ring_len(f)` / `led_ring_count(f)` report the geometry so an effect is
 written once and works at any ring size.

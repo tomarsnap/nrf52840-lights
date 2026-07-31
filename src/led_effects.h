@@ -64,6 +64,23 @@ uint8_t led_effects_get_brightness(void);
 void led_effects_set_speed(uint8_t speed);
 uint8_t led_effects_get_speed(void);
 
+/*
+ * Auto colour cycling: when enabled, the global colour is re-randomised at each
+ * effect's cycle boundary (see led_cycle_color() in led_animations.h), so the
+ * colour drifts on its own instead of staying at the last "C" value. Persisted
+ * and restored at boot, like speed. Effects that ignore the colour (rainbow) or
+ * have no cycle (solid, off) are unaffected while the mode is on.
+ */
+void led_effects_set_auto_color(bool on);
+bool led_effects_get_auto_color(void);
+
+/*
+ * Pick a fresh random colour and make it the current one. Called by
+ * led_cycle_color() from an effect at its cycle boundary; not normally called
+ * directly. Thread-safe.
+ */
+void led_effects_cycle_color(void);
+
 /* Force the strip black regardless of effect, for a critical battery.
  * Not persisted — a reboot clears it. */
 void led_effects_set_lockout(bool lockout);

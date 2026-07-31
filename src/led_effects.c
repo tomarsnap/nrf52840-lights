@@ -9,6 +9,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
 
 LOG_MODULE_REGISTER(led_effects, LOG_LEVEL_INF);
@@ -47,6 +48,7 @@ static uint8_t      state_b          = 0;
 static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by settings */
 static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
 static uint8_t      state_speed      = DEFAULT_SPEED;      /* overridden by settings */
+static bool         state_auto_color;  /* re-randomise colour each cycle (persisted) */
 static bool         state_lockout;   /* battery critical — force output black */
 static int32_t      state_identify   = -1;  /* diagnostic single-pixel spotlight, -1 = off */
 
@@ -73,6 +75,7 @@ static int8_t       ring_dir[LED_RINGS];
  *   led/count  uint16_t  active pixel count
  *   led/bri    uint8_t   brightness
  *   led/spd    uint8_t   animation speed
+ *   led/auto   uint8_t   auto colour-cycle mode (0/1)
  *   led/geo    blob      ring calibration (per-ring top index + direction)
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
@@ -106,6 +109,7 @@ static void settings_save_fn(struct k_work *work)
     uint16_t count      = state_count;
     uint8_t  brightness = state_brightness;
     uint8_t  speed      = state_speed;
+    uint8_t  auto_color = state_auto_color ? 1U : 0U;
     for (int i = 0; i < LED_RINGS; i++) {
         geo.top[i] = ring_top[i];
         geo.dir[i] = ring_dir[i];
@@ -125,6 +129,11 @@ static void settings_save_fn(struct k_work *work)
     err = settings_save_one("led/spd", &speed, sizeof(speed));
     if (err) {
         LOG_ERR("Failed to persist speed: %d", err);
+    }
+
+    err = settings_save_one("led/auto", &auto_color, sizeof(auto_color));
+    if (err) {
+        LOG_ERR("Failed to persist auto-colour mode: %d", err);
     }
 
     err = settings_save_one("led/geo", &geo, sizeof(geo));
@@ -200,6 +209,23 @@ static int led_settings_set(const char *name, size_t len,
         /* Any uint8_t is a valid speed, so no range check needed. */
         state_speed = speed;
         LOG_INF("Restored speed: %u", speed);
+        return 0;
+    }
+
+    if (settings_name_steq(name, "auto", &next) && !next) {
+        uint8_t auto_color;
+
+        if (len != sizeof(auto_color)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &auto_color, sizeof(auto_color));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        state_auto_color = (auto_color != 0U);
+        LOG_INF("Restored auto-colour mode: %u", auto_color);
         return 0;
     }
 
@@ -326,6 +352,7 @@ static void led_thread_fn(void *a, void *b, void *c)
             .b          = state_b,
             .brightness = state_brightness,
             .speed      = state_speed,
+            .auto_color = state_auto_color,
         };
         bool    lockout  = state_lockout;
         int32_t identify = state_identify;
@@ -531,6 +558,46 @@ uint8_t led_effects_get_speed(void)
     k_mutex_unlock(&state_mutex);
 
     return speed;
+}
+
+void led_effects_set_auto_color(bool on)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_auto_color = on;
+    k_mutex_unlock(&state_mutex);
+
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
+    LOG_INF("Auto colour cycle → %s", on ? "on" : "off");
+}
+
+bool led_effects_get_auto_color(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    bool on = state_auto_color;
+    k_mutex_unlock(&state_mutex);
+
+    return on;
+}
+
+void led_effects_cycle_color(void)
+{
+    /* Remember the last hue so each jump is by a random but non-trivial amount:
+     * a full spin of the wheel minus a slice, so consecutive colours are always
+     * clearly different (never two near-identical reds in a row) yet still
+     * unpredictable. Runs on the effect thread, one call per cycle. */
+    static uint8_t hue;
+
+    hue += (uint8_t)(40U + (sys_rand32_get() % 176U));   /* +40..215 */
+
+    uint8_t r, g, b;
+    led_hsv_to_rgb(hue, &r, &g, &b);
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_r = r;
+    state_g = g;
+    state_b = b;
+    k_mutex_unlock(&state_mutex);
 }
 
 /* ── Ring geometry ─────────────────────────────────────────────────────────── */

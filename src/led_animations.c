@@ -18,27 +18,6 @@
 #include <string.h>
 #include <stdint.h>
 
-/* ── Colour helpers ──────────────────────────────────────────────────────── */
-
-/* Simple HSV→RGB: hue 0-255, saturation and value fixed at max. */
-static void hsv_to_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    uint8_t region = hue / 43U;
-    uint8_t rem    = (hue - region * 43U) * 6U;
-    uint8_t p      = 0U;
-    uint8_t q      = (uint16_t)255U * (255U - rem) >> 8U;
-    uint8_t t      = (uint16_t)255U * rem >> 8U;
-
-    switch (region) {
-    case 0: *r = 255; *g = t;   *b = p;   break;
-    case 1: *r = q;   *g = 255; *b = p;   break;
-    case 2: *r = p;   *g = 255; *b = t;   break;
-    case 3: *r = p;   *g = q;   *b = 255; break;
-    case 4: *r = t;   *g = p;   *b = 255; break;
-    default:*r = 255; *g = p;   *b = q;   break;
-    }
-}
-
 /* ── Effects ─────────────────────────────────────────────────────────────── */
 /*
  * Each renderer fills f->pixels[0 .. f->count-1] and returns its inter-frame
@@ -72,7 +51,7 @@ static uint32_t render_rainbow(const struct led_frame *f)
         uint8_t hue = offset + (uint8_t)(i * 256U / f->count);
         uint8_t hr, hg, hb;
 
-        hsv_to_rgb(hue, &hr, &hg, &hb);
+        led_hsv_to_rgb(hue, &hr, &hg, &hb);
         f->pixels[i].r = led_scale(hr, f->brightness);
         f->pixels[i].g = led_scale(hg, f->brightness);
         f->pixels[i].b = led_scale(hb, f->brightness);
@@ -94,7 +73,14 @@ static uint32_t render_breathe(const struct led_frame *f)
     uint8_t wave = (step < 128U)
                  ? (uint8_t)(step * 2U)
                  : (uint8_t)((255U - step) * 2U);
+
+    uint16_t prev = step;
     step = (uint16_t)((step + led_speed_step(f->speed, 6U)) & 0xFFU);
+    if (step < prev) {
+        /* Wrapped past 255 back to the bottom of the breath — one full cycle,
+         * and the strip is momentarily dark, so a colour swap here is seamless. */
+        led_cycle_color(f);
+    }
 
     uint8_t effective_bri = led_scale(wave, f->brightness);
 
@@ -151,7 +137,11 @@ static uint32_t render_worm(const struct led_frame *f)
         led_ring_set(f, 1, (uint16_t)((head1 + t) % len),       col); /* tail trails -1 */
     }
 
+    uint16_t prev = head;
     head = (uint16_t)((head + led_speed_step(f->speed, 4U)) % len);
+    if (head < prev) {
+        led_cycle_color(f);   /* completed one lap → next lap gets a new colour */
+    }
 
     return led_speed_delay(f->speed, 8U, 80U);
 }
