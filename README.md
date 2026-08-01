@@ -5,7 +5,7 @@ using the Nordic UART Service (NUS).
 
 ## Features
 
-- Effects: solid, rainbow, breathe, worm, sparkle, aurora, meteor, heartbeat,
+- Effects: solid, rainbow, breathe, worm, sparkle, aurora, heartbeat,
   firefly, pinwheel, confetti, off
 - BLE control via Nordic UART Service
 - Simple ASCII command protocol
@@ -250,7 +250,7 @@ Case-insensitive ASCII.
 
 | Command | Example | Description |
 |---|---|---|
-| `E<0-11>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe, 4=worm, 5=sparkle, 6=aurora, 7=meteor, 8=heartbeat, 9=firefly, 10=pinwheel, 11=confetti |
+| `E<0-10>` | `E2` | Effect: 0=off, 1=solid, 2=rainbow, 3=breathe, 4=worm, 5=sparkle, 6=aurora, 7=heartbeat, 8=firefly, 9=pinwheel, 10=confetti |
 | `C<r>,<g>,<b>` | `C255,0,128` | Set colour (0–255 per channel) |
 | `B<0-255>` | `B128` | Set brightness. **Persisted** |
 | `S<0-255>` | `S200` | Set animation speed (0=slowest, 255=fastest). **Persisted** |

@@ -319,63 +319,6 @@ static uint32_t render_aurora(const struct led_frame *f)
 }
 
 /*
- * Twin Meteors — a bright meteor with a fading tail shoots around each ring, the
- * two travelling in OPPOSITE directions so they cross at the top and bottom each
- * lap. Ring 0's meteor is the global colour, ring 1's a randomised companion.
- * The tail is the gradient: the head is white-hot and it fades to black behind.
- * Same mirror idea as render_worm, with a longer tail and a hotter head.
- */
-static uint32_t render_meteor(const struct led_frame *f)
-{
-    static uint16_t head;
-    static uint8_t  companion_hue;
-
-    const uint16_t len  = led_ring_len(f);
-    const uint16_t tail = 10U;              /* tail length, head included */
-    if (len == 0U) {
-        return 50U;
-    }
-
-    led_clear(f);
-
-    uint8_t cr, cg, cb;
-    led_hsv_to_rgb(companion_hue, &cr, &cg, &cb);
-    const struct led_rgb anchor0 = { .r = f->r, .g = f->g, .b = f->b };
-    const struct led_rgb anchor1 = { .r = cr,   .g = cg,   .b = cb   };
-    const struct led_rgb white   = { .r = 255,  .g = 255,  .b = 255  };
-
-    uint16_t head0 = head;
-    uint16_t head1 = (uint16_t)((len - head % len) % len);   /* opposite way */
-
-    for (uint16_t tpix = 0; tpix < tail && tpix < len; tpix++) {
-        /* head (tpix 0) pops toward white; the tail fades out behind it */
-        struct led_rgb c0 = led_lerp(anchor0, white, tpix == 0U ? 200U : 0U);
-        struct led_rgb c1 = led_lerp(anchor1, white, tpix == 0U ? 200U : 0U);
-        uint8_t fade = (uint8_t)(255U - tpix * (255U / tail));
-        uint8_t bri  = led_scale(fade, f->brightness);
-
-        c0 = (struct led_rgb){ .r = led_scale(c0.r, bri),
-                               .g = led_scale(c0.g, bri),
-                               .b = led_scale(c0.b, bri) };
-        c1 = (struct led_rgb){ .r = led_scale(c1.r, bri),
-                               .g = led_scale(c1.g, bri),
-                               .b = led_scale(c1.b, bri) };
-
-        led_ring_set(f, 0, (uint16_t)((head0 + len - tpix) % len), c0);
-        led_ring_set(f, 1, (uint16_t)((head1 + tpix) % len),       c1);
-    }
-
-    uint16_t prev = head;
-    head = (uint16_t)((head + led_speed_step(f->speed, 4U)) % len);
-    if (head < prev) {
-        companion_hue += (uint8_t)(40U + (sys_rand32_get() % 176U));
-        led_cycle_color(f);
-    }
-
-    return led_speed_delay(f->speed, 8U, 80U);
-}
-
-/*
  * Heartbeat — both eyes pulse in the global colour with a cardiac lub-dub
  * rhythm, stepping through heartbeat_env[]. No motion around the ring, just a
  * whole-strip brightness envelope; symmetric across the eyes by construction.
@@ -416,7 +359,13 @@ static uint32_t render_firefly(const struct led_frame *f)
     static uint8_t fly_hue[LED_MAX_PIXELS];  /* per-pixel hue        */
     static uint16_t frames;                  /* for the auto-colour tick */
 
-    const uint8_t decay = 6U;                /* slow → lingering glow */
+    /* Past the speed midpoint, fade and ignite faster so the top of the range
+     * is genuinely brisk: the ~12 ms refresh floor caps the frame rate, so
+     * extra speed has to come from doing more per frame (led_speed_step returns
+     * 1 up to the midpoint, so the default feel is unchanged). */
+    uint16_t sp = led_speed_step(f->speed, 5U);   /* 1 → 5 across the top half */
+    const uint8_t  decay = (uint8_t)(6U * sp);    /* 6 → 30: quicker glow-down  */
+    const uint32_t seed  = 400U / sp;             /* 400 → 80: more ignitions   */
 
     led_clear(f);
 
@@ -426,7 +375,7 @@ static uint32_t render_firefly(const struct led_frame *f)
         fly[i] = (fly[i] > decay) ? (uint8_t)(fly[i] - decay) : 0U;
 
         /* rarely ignite a new firefly on a dark pixel */
-        if (fly[i] == 0U && (sys_rand32_get() % 400U) == 0U) {
+        if (fly[i] == 0U && (sys_rand32_get() % seed) == 0U) {
             fly[i]     = (uint8_t)(140U + (sys_rand32_get() % 116U));  /* 140..255 */
             int jitter = (int)(sys_rand32_get() % 31U) - 15;           /* ±15 hue  */
             fly_hue[i] = (uint8_t)((int)base + jitter);
@@ -448,7 +397,7 @@ static uint32_t render_firefly(const struct led_frame *f)
         led_cycle_color(f);
     }
 
-    return led_speed_delay(f->speed, 15U, 90U);
+    return led_speed_delay(f->speed, 8U, 90U);
 }
 
 /*
@@ -472,10 +421,10 @@ static uint32_t render_pinwheel(const struct led_frame *f)
 
     for (int ring = 0; ring < led_ring_count(f); ring++) {
         uint8_t  base = (ring == 0) ? base0 : companion_hue;
-        uint16_t r    = (ring == 0) ? rot : (uint16_t)((len - rot % len) % len);
+        uint16_t rr   = (ring == 0) ? rot : (uint16_t)((len - rot % len) % len);
 
         for (uint16_t p = 0; p < len; p++) {
-            uint8_t s   = (uint8_t)(((p + r) % len) * seg / len);   /* 0..seg-1 */
+            uint8_t s   = (uint8_t)(((p + rr) % len) * seg / len);  /* 0..seg-1 */
             uint8_t hue = (uint8_t)(base + s * (uint8_t)(256U / seg));
 
             uint8_t hr, hg, hb;
@@ -488,13 +437,15 @@ static uint32_t render_pinwheel(const struct led_frame *f)
     }
 
     uint16_t prev = rot;
-    rot = (uint16_t)((rot + led_speed_step(f->speed, 3U)) % len);
+    /* max_step 6 spins the wheel much faster at the top of the range (past the
+     * midpoint); may look a touch strobey at the very top on a small ring. */
+    rot = (uint16_t)((rot + led_speed_step(f->speed, 6U)) % len);
     if (rot < prev) {
         companion_hue += (uint8_t)(40U + (sys_rand32_get() % 176U));
         led_cycle_color(f);
     }
 
-    return led_speed_delay(f->speed, 8U, 70U);
+    return led_speed_delay(f->speed, 5U, 70U);
 }
 
 /*
@@ -507,14 +458,17 @@ static uint32_t render_confetti(const struct led_frame *f)
     static uint8_t c_bri[LED_MAX_PIXELS];
     static uint8_t c_hue[LED_MAX_PIXELS];
 
-    const uint8_t decay = 12U;
+    /* Faster fade past the midpoint → a quicker turnover at the top of the
+     * range despite the refresh floor; more pops keep it from thinning out. */
+    uint16_t sp = led_speed_step(f->speed, 4U);       /* 1 → 4 across the top half */
+    const uint8_t decay = (uint8_t)(12U * sp);        /* 12 → 48 */
 
     for (uint16_t i = 0; i < f->count; i++) {
         c_bri[i] = (c_bri[i] > decay) ? (uint8_t)(c_bri[i] - decay) : 0U;
     }
 
-    /* pop a few new confetti each frame, a touch denser at higher speed */
-    uint8_t pops = (uint8_t)(1U + (f->speed >> 6));   /* 1..4 */
+    /* pop a few new confetti each frame, denser at higher speed */
+    uint8_t pops = (uint8_t)(1U + (f->speed >> 5));   /* 1..8 */
     for (uint8_t k = 0; k < pops; k++) {
         uint16_t i = (uint16_t)(sys_rand32_get() % f->count);
         c_bri[i] = 255U;
@@ -549,7 +503,6 @@ uint32_t led_render(const struct led_frame *f)
     case EFFECT_WORM:      return render_worm(f);
     case EFFECT_SPARKLE:   return render_sparkle(f);
     case EFFECT_AURORA:    return render_aurora(f);
-    case EFFECT_METEOR:    return render_meteor(f);
     case EFFECT_HEARTBEAT: return render_heartbeat(f);
     case EFFECT_FIREFLY:   return render_firefly(f);
     case EFFECT_PINWHEEL:  return render_pinwheel(f);

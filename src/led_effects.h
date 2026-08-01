@@ -11,11 +11,10 @@ typedef enum {
     EFFECT_WORM      = 4,
     EFFECT_SPARKLE   = 5,   /* sparkle + travelling gradient, ring 1 randomised */
     EFFECT_AURORA    = 6,   /* slow flowing gradient, tinted by the global colour */
-    EFFECT_METEOR    = 7,   /* twin meteors crossing, one per ring, mirrored      */
-    EFFECT_HEARTBEAT = 8,   /* lub-dub brightness pulse in the global colour      */
-    EFFECT_FIREFLY   = 9,   /* sparse independent twinkles fading in and out      */
-    EFFECT_PINWHEEL  = 10,  /* counter-rotating colour wedges                     */
-    EFFECT_CONFETTI  = 11,  /* random self-coloured pops (ignores global colour)  */
+    EFFECT_HEARTBEAT = 7,   /* lub-dub brightness pulse in the global colour      */
+    EFFECT_FIREFLY   = 8,   /* sparse independent twinkles fading in and out      */
+    EFFECT_PINWHEEL  = 9,   /* counter-rotating colour wedges                     */
+    EFFECT_CONFETTI  = 10,  /* random self-coloured pops (ignores global colour)  */
 } led_effect_t;
 
 /* Keep in sync with the enum above: the highest valid effect index, used to

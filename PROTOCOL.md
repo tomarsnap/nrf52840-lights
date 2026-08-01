@@ -70,7 +70,7 @@ command is ignored (and logged over serial, which is disabled in production, so
 
 | Command | Arg range | Example | Effect | Persisted |
 |---|---|---|---|---|
-| `E<n>` | `0`–`11` (see enum) | `E2` | Select effect | no |
+| `E<n>` | `0`–`10` (see enum) | `E2` | Select effect | no |
 | `C<r>,<g>,<b>` | each `0`–`255` | `C255,0,128` | Set colour | no |
 | `B<n>` | `0`–`255` | `B128` | Brightness (`0` = off) | **yes** |
 | `S<n>` | `0`–`255` | `S200` | Animation speed (`0` slow … `255` fast) | **yes** |
@@ -91,11 +91,10 @@ command is ignored (and logged over serial, which is disabled in production, so
 | 4 | worm |
 | 5 | sparkle (travelling gradient + sparkle, ring 1 randomised) |
 | 6 | aurora (slow flowing gradient, tinted by the colour) |
-| 7 | meteor (twin meteors crossing, one per ring) |
-| 8 | heartbeat (lub-dub pulse in the colour) |
-| 9 | firefly (sparse twinkles fading in and out) |
-| 10 | pinwheel (counter-rotating colour wedges) |
-| 11 | confetti (random self-coloured pops) |
+| 7 | heartbeat (lub-dub pulse in the colour) |
+| 8 | firefly (sparse twinkles fading in and out) |
+| 9 | pinwheel (counter-rotating colour wedges) |
+| 10 | confetti (random self-coloured pops) |
 
 > The set of effects **grows over time** — new ones are appended with higher
 > indices. Don't hard-code "4 is the max": read `effect` from `?` and treat any
