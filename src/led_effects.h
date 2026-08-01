@@ -128,12 +128,26 @@ bool led_effects_is_locked_out(void);
 /*
  * ── Ring geometry ────────────────────────────────────────────────────────────
  *
- * The active pixel count is split evenly into LED_RINGS equal rings (see
- * led_animations.h). These report the resulting layout and let it be calibrated
- * to the physical mounting.
+ * The active pixel count is split evenly into the active ring count (see
+ * led_animations.h). How many rings is set at runtime and persisted, like the
+ * pixel count; LED_MAX_RINGS is the compile-time ceiling. These report the
+ * resulting layout and let it be calibrated to the physical mounting.
  */
 int led_effects_ring_count(void);   /* rings mapped (1 if count is not divisible) */
 int led_effects_ring_size(void);    /* pixels per ring                            */
+
+/*
+ * Active ring count — how many equal rings the strip is split into. Configured
+ * at runtime and persisted, so one image drives a single- or multi-ring build.
+ * The effective split (led_effects_ring_count) degrades to 1 if the pixel count
+ * is not divisible into this many rings.
+ */
+int led_effects_get_rings(void);    /* configured ring count (the "R" value) */
+int led_effects_max_rings(void);    /* LED_MAX_RINGS — the ceiling            */
+
+/* Set the active ring count and persist it. Takes effect on the next frame.
+ * Returns -EINVAL if rings is 0 or above LED_MAX_RINGS. */
+int led_effects_set_rings(uint8_t rings);
 
 /* Per-ring calibration readback (for the "?" report). top is a physical pixel
  * index; dir is +1 or -1. Returns -1 (top) / 0 (dir) for an invalid ring. */

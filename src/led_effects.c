@@ -38,6 +38,13 @@ LOG_MODULE_REGISTER(led_effects, LOG_LEVEL_INF);
  */
 #define DEFAULT_SPEED       128
 
+/*
+ * Ring count used until a value is restored from NVS. Two matches the physical
+ * two-eye glasses build; LED_MAX_RINGS (led_animations.h) is the compile-time
+ * ceiling the runtime value is clamped to.
+ */
+#define DEFAULT_RINGS       2
+
 static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 static struct led_rgb pixels[STRIP_MAX_PIXELS];
 
@@ -50,6 +57,7 @@ static uint8_t      state_b          = 0;
 static uint8_t      state_brightness = DEFAULT_BRIGHTNESS; /* overridden by settings */
 static uint16_t     state_count      = STRIP_MAX_PIXELS;   /* overridden by settings */
 static uint8_t      state_speed      = DEFAULT_SPEED;      /* overridden by settings */
+static uint8_t      state_rings      = DEFAULT_RINGS;      /* active ring count; overridden by settings */
 static bool         state_auto_color;  /* re-randomise colour each cycle (persisted) */
 static bool         state_lockout;   /* battery critical — force output black */
 static int32_t      state_identify   = -1;  /* diagnostic single-pixel spotlight, -1 = off */
@@ -87,8 +95,8 @@ static const struct color_order_def {
  * NVS at boot. Reset to the defaults in led_effects_init() before load.
  */
 #define RING_TOP_UNSET  UINT16_MAX
-static uint16_t     ring_top[LED_RINGS];
-static int8_t       ring_dir[LED_RINGS];
+static uint16_t     ring_top[LED_MAX_RINGS];
+static int8_t       ring_dir[LED_MAX_RINGS];
 
 /* Level the "identify" diagnostic lights its single pixel at — fixed and low so
  * it is always visible regardless of the saved brightness. */
@@ -103,6 +111,7 @@ static int8_t       ring_dir[LED_RINGS];
  *   led/auto   uint8_t   auto colour-cycle mode (0/1)
  *   led/order  uint8_t   strip colour order (led_color_order_t)
  *   led/fx     uint8_t   active effect (led_effect_t index)
+ *   led/rings  uint8_t   active ring count (1 .. LED_MAX_RINGS)
  *   led/geo    blob      ring calibration (per-ring top index + direction)
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
@@ -125,10 +134,13 @@ static int8_t       ring_dir[LED_RINGS];
  */
 #define SETTINGS_SAVE_DELAY  K_MSEC(750)
 
-/* On-flash layout of the ring calibration blob ("led/geo"). */
+/* On-flash layout of the ring calibration blob ("led/geo"). Sized by
+ * LED_MAX_RINGS, so changing that ceiling changes the blob size and a blob
+ * saved by an older build is rejected on load (calibration falls back to the
+ * uncalibrated defaults). */
 struct geo_nv {
-    uint16_t top[LED_RINGS];
-    int8_t   dir[LED_RINGS];
+    uint16_t top[LED_MAX_RINGS];
+    int8_t   dir[LED_MAX_RINGS];
 };
 
 static void settings_save_fn(struct k_work *work)
@@ -144,7 +156,8 @@ static void settings_save_fn(struct k_work *work)
     uint8_t  auto_color = state_auto_color ? 1U : 0U;
     uint8_t  order      = (uint8_t)state_color_order;
     uint8_t  effect     = (uint8_t)state_effect;
-    for (int i = 0; i < LED_RINGS; i++) {
+    uint8_t  rings      = state_rings;
+    for (int i = 0; i < LED_MAX_RINGS; i++) {
         geo.top[i] = ring_top[i];
         geo.dir[i] = ring_dir[i];
     }
@@ -178,6 +191,11 @@ static void settings_save_fn(struct k_work *work)
     err = settings_save_one("led/fx", &effect, sizeof(effect));
     if (err) {
         LOG_ERR("Failed to persist effect: %d", err);
+    }
+
+    err = settings_save_one("led/rings", &rings, sizeof(rings));
+    if (err) {
+        LOG_ERR("Failed to persist ring count: %d", err);
     }
 
     err = settings_save_one("led/geo", &geo, sizeof(geo));
@@ -319,6 +337,30 @@ static int led_settings_set(const char *name, size_t len,
         return 0;
     }
 
+    if (settings_name_steq(name, "rings", &next) && !next) {
+        uint8_t rings;
+
+        if (len != sizeof(rings)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &rings, sizeof(rings));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Guard against a value saved by a build with a higher ceiling. */
+        if (rings == 0U || rings > LED_MAX_RINGS) {
+            LOG_WRN("Stored ring count %u out of range (1-%d), ignoring",
+                    rings, LED_MAX_RINGS);
+            return 0;
+        }
+
+        state_rings = rings;
+        LOG_INF("Restored ring count: %u", rings);
+        return 0;
+    }
+
     if (settings_name_steq(name, "geo", &next) && !next) {
         struct geo_nv geo;
 
@@ -333,7 +375,7 @@ static int led_settings_set(const char *name, size_t len,
 
         /* Range of each top is re-validated at use time against the current
          * ring size, so store as-is; only sanitise the direction. */
-        for (int i = 0; i < LED_RINGS; i++) {
+        for (int i = 0; i < LED_MAX_RINGS; i++) {
             ring_top[i] = geo.top[i];
             ring_dir[i] = (geo.dir[i] < 0) ? -1 : 1;
         }
@@ -379,15 +421,25 @@ static uint16_t active_count(void)
     return count;
 }
 
-/*
- * Split `total` active pixels into equal rings. Returns the ring count and
- * writes the per-ring size. If the total does not divide evenly across
- * LED_RINGS (or is zero), it degrades to a single ring spanning the whole
- * strip, so ring-based effects still render something sane. Pure — no locking.
- */
-static uint8_t geometry_split(uint16_t total, uint16_t *ring_size)
+static uint8_t active_rings(void)
 {
-    uint8_t rc = LED_RINGS;
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    uint8_t rings = state_rings;
+    k_mutex_unlock(&state_mutex);
+
+    return rings;
+}
+
+/*
+ * Split `total` active pixels into `rings` equal rings. Returns the effective
+ * ring count and writes the per-ring size. If the total does not divide evenly
+ * across `rings` (or either is zero), it degrades to a single ring spanning the
+ * whole strip, so ring-based effects still render something sane. Pure — no
+ * locking; the caller passes a snapshot of the runtime ring count.
+ */
+static uint8_t geometry_split(uint16_t total, uint8_t rings, uint16_t *ring_size)
+{
+    uint8_t rc = rings;
 
     if (rc == 0U || total == 0U || (total % rc) != 0U) {
         rc = 1U;
@@ -451,7 +503,7 @@ static void led_thread_fn(void *a, void *b, void *c)
          * active count, then apply each ring's calibrated top and direction
          * (falling back to the electrical start if uncalibrated). */
         uint16_t ring_size;
-        uint8_t  rc = geometry_split(frame.count, &ring_size);
+        uint8_t  rc = geometry_split(frame.count, state_rings, &ring_size);
         frame.ring_count = rc;
         for (uint8_t i = 0; i < rc; i++) {
             uint16_t base = (uint16_t)(i * ring_size);
@@ -549,7 +601,7 @@ int led_effects_init(void)
     /* Ring calibration defaults, applied before load so a stored blob overrides
      * them and an absent one leaves every ring uncalibrated (top = electrical
      * start, dir = +1). */
-    for (int i = 0; i < LED_RINGS; i++) {
+    for (int i = 0; i < LED_MAX_RINGS; i++) {
         ring_top[i] = RING_TOP_UNSET;
         ring_dir[i] = 1;
     }
@@ -606,6 +658,33 @@ int led_effects_set_count(uint16_t count)
     k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
 
     LOG_INF("Pixel count → %u", count);
+    return 0;
+}
+
+int led_effects_get_rings(void)
+{
+    return active_rings();
+}
+
+int led_effects_max_rings(void)
+{
+    return LED_MAX_RINGS;
+}
+
+int led_effects_set_rings(uint8_t rings)
+{
+    if (rings == 0U || rings > LED_MAX_RINGS) {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_rings = rings;
+    k_mutex_unlock(&state_mutex);
+
+    /* Reschedules if already pending, so a burst of changes writes once. */
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
+    LOG_INF("Ring count → %u", rings);
     return 0;
 }
 
@@ -780,20 +859,20 @@ void led_effects_cycle_color(void)
 int led_effects_ring_count(void)
 {
     uint16_t ring_size;
-    return geometry_split(active_count(), &ring_size);
+    return geometry_split(active_count(), active_rings(), &ring_size);
 }
 
 int led_effects_ring_size(void)
 {
     uint16_t ring_size;
-    (void)geometry_split(active_count(), &ring_size);
+    (void)geometry_split(active_count(), active_rings(), &ring_size);
     return ring_size;
 }
 
 int led_effects_ring_top(int ring)
 {
     uint16_t ring_size;
-    uint8_t  rc = geometry_split(active_count(), &ring_size);
+    uint8_t  rc = geometry_split(active_count(), active_rings(), &ring_size);
 
     if (ring < 0 || ring >= rc) {
         return -1;
@@ -824,7 +903,7 @@ int led_effects_ring_dir(int ring)
 int led_effects_set_ring_cal(int ring, int top, int dir)
 {
     uint16_t ring_size;
-    uint8_t  rc = geometry_split(active_count(), &ring_size);
+    uint8_t  rc = geometry_split(active_count(), active_rings(), &ring_size);
 
     if (ring < 0 || ring >= rc) {
         return -EINVAL;

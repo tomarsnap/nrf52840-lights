@@ -10,20 +10,26 @@
 /*
  * ── Ring geometry ────────────────────────────────────────────────────────────
  *
- * The strip is physically one WS2812 chain, but it is mounted as LED_RINGS
+ * The strip is physically one WS2812 chain, but it is mounted as a number of
  * equal-size rings wired in series (ring 0 = pixels [0,size), ring 1 =
  * [size,2*size), ...). The engine owns this geometry; effects address rings by
  * LOGICAL position and never see a physical index.
  *
+ * How many rings is chosen at RUNTIME (the "R" command, persisted) — like the
+ * pixel count — so one image drives a single- or dual-ring build. LED_MAX_RINGS
+ * is the compile-time ceiling that sizes the per-frame and calibration arrays;
+ * the active count is always <= it. ring_count in each frame is the number of
+ * rings actually mapped this frame.
+ *
  * base/size come from the wiring (the active pixel count split evenly across
- * the rings). top/dir are the physical-mounting calibration, set over BLE with
- * the "K" command and persisted: `top` is the physical pixel sitting at the
- * ring's reference point ("12 o'clock"), and `dir` is which way the physical
- * index moves as a logical position increases (+1 or -1). Calibrating the two
- * rings with opposite `dir` makes led_all_set() come out as a mirror image;
+ * the active rings). top/dir are the physical-mounting calibration, set over
+ * BLE with the "K" command and persisted: `top` is the physical pixel sitting
+ * at the ring's reference point ("12 o'clock"), and `dir` is which way the
+ * physical index moves as a logical position increases (+1 or -1). Calibrating
+ * two rings with opposite `dir` makes led_all_set() come out as a mirror image;
  * the same `dir` makes it an identical copy.
  */
-#define LED_RINGS 2
+#define LED_MAX_RINGS 4
 
 struct led_ring {
     uint16_t base;   /* physical index of the ring's first pixel in the chain */
@@ -64,8 +70,8 @@ struct led_frame {
 
     /* Geometry snapshot — use the drawing helpers below (led_ring_set,
      * led_all_set, ...) rather than touching this directly. */
-    uint8_t         ring_count;         /* rings mapped this frame (<= LED_RINGS) */
-    struct led_ring rings[LED_RINGS];
+    uint8_t         ring_count;         /* rings mapped this frame (<= LED_MAX_RINGS) */
+    struct led_ring rings[LED_MAX_RINGS];
 };
 
 /*

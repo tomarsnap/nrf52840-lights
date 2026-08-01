@@ -187,6 +187,18 @@ static void on_nus_received(struct bt_conn *conn,
         }
         break;
     }
+    case 'r': {
+        /* R<n> — how many equal rings to split the strip into. */
+        int rings = atoi(&buf[1]);
+
+        if (rings < 1 || rings > led_effects_max_rings()) {
+            LOG_WRN("Bad ring count %d (valid 1-%d)",
+                    rings, led_effects_max_rings());
+        } else {
+            led_effects_set_rings((uint8_t)rings);
+        }
+        break;
+    }
     case 'o': {
         /* O<order> — strip colour order, text and case-insensitive
          * (grb/rgb/grbw/rgbw). Unlike the other settings this re-programs the
@@ -243,11 +255,38 @@ static void on_nus_received(struct bt_conn *conn,
         led_effects_identify(atoi(&buf[1]));
         break;
     }
+    case 'h': {
+        /* H / help — human-readable command list for a UART terminal. Ranges
+         * are filled from the firmware's own limits so they never drift. Keep
+         * the list in sync with the command cases above and PROTOCOL.md.
+         * nus_send_all() chunks the reply to the MTU. */
+        char out[512];
+        int  n = snprintf(out, sizeof(out),
+            "commands (see PROTOCOL.md):\n"
+            "  E<n>          effect 0-%d\n"
+            "  C<r>,<g>,<b>  colour, each 0-255\n"
+            "  B<n>          brightness 0-255\n"
+            "  S<n>          speed 0-255\n"
+            "  A<0|1>        auto colour cycle\n"
+            "  N<n>          pixel count 1-%d\n"
+            "  R<n>          ring count 1-%d\n"
+            "  O<order>      colour order grb|rgb|grbw|rgbw\n"
+            "  K<r>,<t>,<d>  calibrate ring r: top t, dir +/-1\n"
+            "  I<pixel>      identify one pixel (-1 = off)\n"
+            "  ?             report full state\n"
+            "  H             this help\n",
+            (int)EFFECT_MAX, led_effects_max_pixels(), led_effects_max_rings());
+
+        if (n > 0) {
+            nus_send_all(conn, out, (uint16_t)MIN(n, (int)sizeof(out) - 1));
+        }
+        break;
+    }
     case '?': {
         /* Battery level is also published via the standard BLE Battery
          * Service; this is the human-readable version for a UART terminal.
          * nus_send_all() chunks to the MTU, so a multi-line reply is fine. */
-        char    out[224];
+        char    out[288];
         int     mv = battery_millivolts();
         int     n  = 0;
         uint8_t cr, cg, cb;
@@ -266,8 +305,9 @@ static void on_nus_received(struct bt_conn *conn,
          * parseable "key value" grammar — see PROTOCOL.md, which the companion
          * app relies on; do not reorder or rename fields without updating it. */
         n += snprintf(out + n, sizeof(out) - n,
-                      " | pixels %d | effect %d | color %u,%u,%u | bri %u | spd %u | auto %u | order %s\n",
+                      " | pixels %d | rings %d | effect %d | color %u,%u,%u | bri %u | spd %u | auto %u | order %s\n",
                       led_effects_pixel_count(),
+                      led_effects_get_rings(),
                       (int)led_effects_get_effect(),
                       cr, cg, cb,
                       led_effects_get_brightness(),

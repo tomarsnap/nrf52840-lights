@@ -76,10 +76,12 @@ command is ignored (and logged over serial, which is disabled in production, so
 | `S<n>` | `0`–`255` | `S200` | Animation speed (`0` slow … `255` fast) | **yes** |
 | `A<n>` | `0`/`1` (non-zero = on) | `A1` | Auto colour cycle | **yes** |
 | `N<n>` | `1`–`72` | `N36` | Active pixel count | **yes** |
+| `R<n>` | `1`–`4` | `R2` | Ring count (rings to split the strip into) | **yes** |
 | `O<order>` | `grb`/`rgb`/`grbw`/`rgbw` | `Ogrbw` | Strip colour order | **yes** |
 | `K<ring>,<top>,<dir>` | see *Geometry* | `K0,5,1` | Calibrate a ring | **yes** |
 | `I<pixel>` | `-1`–`71` | `I5` | Identify one physical pixel (`-1` = off) | no |
 | `?` | — | `?` | Report full state (multi-line reply) | — |
+| `H` | — | `H` | List all commands (multi-line reply) | — |
 
 **Effect enum** (`E` argument):
 
@@ -90,7 +92,7 @@ command is ignored (and logged over serial, which is disabled in production, so
 | 2 | rainbow |
 | 3 | breathe |
 | 4 | worm |
-| 5 | sparkle (travelling gradient + sparkle, ring 1 randomised) |
+| 5 | sparkle (travelling gradient + sparkle; ring 1 diverges only under `A1`) |
 | 6 | aurora (slow flowing gradient, tinted by the colour) |
 | 7 | heartbeat (lub-dub pulse in the colour) |
 | 8 | firefly (sparse twinkles fading in and out) |
@@ -108,14 +110,24 @@ then written to flash and restored on boot. Colour is **not** persisted (it
 resets to the boot default), which is why the app should read state back with
 `?` on connect rather than assuming.
 
-### Geometry (`K` / `I`)
+### Geometry (`R` / `K` / `I`)
 
-The strip is one physical WS2812 chain mounted as **2 equal rings** (pixels
-`[0, size)` and `[size, 2·size)`). Each ring has a calibrated **top** (the
-physical pixel index at its 12-o'clock) and **direction** (`+1`/`-1`). `K` sets
-them; `top` must be a physical index inside that ring, `dir` must be `±1`, else
-the command is rejected. `I<pixel>` lights one physical pixel so you can find a
-ring's top by eye; selecting any effect (or `I-1`) leaves identify mode.
+The strip is one physical WS2812 chain split into **N equal rings**, where N is
+set at runtime with `R` (`1`–`4`, default `2`) and persisted — so one firmware
+image drives a single-ring or multi-ring build. Ring `i` owns pixels
+`[i·size, (i+1)·size)`. The active pixel count must divide evenly into the ring
+count; if it doesn't, the firmware degrades to a **single** ring spanning the
+whole strip for that frame (so pick an `N` that divides the pixel count).
+
+Each ring has a calibrated **top** (the physical pixel index at its 12-o'clock)
+and **direction** (`+1`/`-1`). `K` sets them; `top` must be a physical index
+inside that ring, `dir` must be `±1`, else the command is rejected. `I<pixel>`
+lights one physical pixel so you can find a ring's top by eye; selecting any
+effect (or `I-1`) leaves identify mode.
+
+Changing the ring count or pixel count can leave a ring's stored `top` outside
+its new bounds; the firmware then falls back to that ring's electrical start
+until you re-calibrate.
 
 Most apps only need to expose these on an "advanced/setup" screen — the everyday
 controls are `E`/`C`/`B`/`S`/`A`.
@@ -154,13 +166,14 @@ set below is stable.
 **Line 1 — state:**
 
 ```
-batt 3987 mV (86%) | pixels 36 | effect 3 | color 255,0,0 | bri 64 | spd 128 | auto 1 | order grb
+batt 3987 mV (86%) | pixels 36 | rings 2 | effect 3 | color 255,0,0 | bri 64 | spd 128 | auto 1 | order grb
 ```
 
 | Field | Meaning |
 |---|---|
 | `batt <mv> mV (<pct>%)` | Battery millivolts and percent. May instead be `batt: sampling` before the first ADC reading, **or** carry a trailing ` LOCKOUT` token when the battery-critical cutoff has blanked the strip. If battery hardware isn't fitted this still prints, but the value is meaningless — prefer BAS. |
 | `pixels <n>` | Active pixel count (the `N` value) |
+| `rings <n>` | Configured ring count (the `R` value). The realised split is on line 2 and equals this unless the pixel count isn't divisible into `n` rings. |
 | `effect <n>` | Current effect index (the `E` value) |
 | `color <r>,<g>,<b>` | Current colour (the `C` value) |
 | `bri <0-255>` | Brightness |
@@ -174,15 +187,18 @@ batt 3987 mV (86%) | pixels 36 | effect 3 | color 255,0,0 | bri 64 | spd 128 | a
 rings 2 x 36 | r0 top 5 dir +1 | r1 top 40 dir -1
 ```
 
-`rings <count> x <size>`, then one ` | r<i> top <t> dir <±d>` block per ring.
-(If the pixel count isn't divisible into 2 rings the firmware degrades to a
-single ring here.)
+`rings <count> x <size>` — the **realised** split, then one
+` | r<i> top <t> dir <±d>` block per ring. `count` here is the effective ring
+count and `count · size == pixels` always holds; it equals the configured `R`
+value (line 1) unless the pixel count isn't divisible into that many rings, in
+which case the firmware degrades to a single ring here.
 
 **Suggested regexes** (tolerant of the optional `LOCKOUT`/`sampling` variants):
 
 ```
 batt (\d+) mV \((\d+)%\)( LOCKOUT)?   # or:  batt: sampling
 pixels (\d+)
+rings (\d+)
 effect (\d+)
 color (\d+),(\d+),(\d+)
 bri (\d+) | spd (\d+) | auto ([01])

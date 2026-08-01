@@ -68,6 +68,14 @@ and set the count to the total. The nRF52840 has only one I2S instance, so
 chaining is the only way to drive more than one ring — they cannot be run as
 independent strips.
 
+**How many rings the chain is split into is also a runtime setting** — send
+`R<count>` (e.g. `R2`), persisted like the pixel count, up to a compile-time
+ceiling of `LED_MAX_RINGS` (currently 4). The active pixel count is divided
+evenly into that many logical rings, which effects address by logical position;
+`R1` drives the whole chain as one ring. The pixel count must divide evenly into
+the ring count, otherwise the firmware falls back to a single ring. See
+`PROTOCOL.md` for `R`, per-ring calibration (`K`), and the `?`/`H` replies.
+
 Data for pixels beyond the active count is still clocked out — the driver
 always transmits a full-length frame — but falls off the end of a shorter
 chain harmlessly. This is deliberate; see the comment on `strip_flush()` in
