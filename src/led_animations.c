@@ -81,16 +81,34 @@ static uint32_t render_rainbow(const struct led_frame *f)
     /* Animation phase: advanced once per frame, retained across calls. */
     static uint8_t offset;
 
-    /* Spread one full hue cycle over the ACTIVE pixels, so the gradient wraps
-     * correctly whatever the ring size. */
-    for (uint16_t i = 0; i < f->count; i++) {
-        uint8_t hue = offset + (uint8_t)(i * 256U / f->count);
-        uint8_t hr, hg, hb;
+    const uint16_t len = led_ring_len(f);
+    if (len == 0U) {
+        return 60U;
+    }
 
-        led_hsv_to_rgb(hue, &hr, &hg, &hb);
-        f->pixels[i].r = led_scale(hr, f->brightness);
-        f->pixels[i].g = led_scale(hg, f->brightness);
-        f->pixels[i].b = led_scale(hb, f->brightness);
+    /*
+     * One FULL hue cycle per RING, addressed in logical positions. A ring is a
+     * physical loop — its first and last pixels sit next to each other — so the
+     * gradient must span the whole colour wheel across the ring for those two
+     * neighbours to share a hue and wrap seamlessly. Spreading a single cycle
+     * over the entire chain (the old approach) put only half the wheel on each
+     * ring, leaving a jarring half-wheel jump at every ring seam. Drawing per
+     * ring via the geometry engine also aligns both eyes to their calibrated
+     * tops and winding direction.
+     */
+    for (int ring = 0; ring < led_ring_count(f); ring++) {
+        for (uint16_t p = 0; p < len; p++) {
+            uint8_t hue = offset + (uint8_t)(p * 256U / len);
+            uint8_t hr, hg, hb;
+
+            led_hsv_to_rgb(hue, &hr, &hg, &hb);
+            struct led_rgb col = {
+                .r = led_scale(hr, f->brightness),
+                .g = led_scale(hg, f->brightness),
+                .b = led_scale(hb, f->brightness),
+            };
+            led_ring_set(f, ring, p, col);
+        }
     }
     /* Speed shortens the frame delay through the low/normal range, then (past
      * the midpoint, once the delay hits the refresh floor) spins the hue faster
