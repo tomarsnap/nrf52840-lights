@@ -81,23 +81,40 @@
 };
 
 /*
- * Battery sense — EXTERNAL divider, two resistors, wired by hand:
+ * Battery sense — INTERNAL VDDHDIV5, no external parts.
+ *
+ * The SAADC has a special input, VDDHDIV5, that samples the chip's VDDH pin
+ * divided by 5 inside the die — no divider resistors, no GPIO consumed. On the
+ * nice!nano the cell (B+) feeds VDDH, so this reads the battery directly; it is
+ * how a genuine nice!nano v2 measures its own battery. The x5 is undone by the
+ * vbatt full/output ratio below, so battery.c needs no change.
+ *
+ * A cell tops out at 4.2 V, over the SAADC's 3.6 V ceiling at the best gain, so
+ * it must be scaled: 4.2 V / 5 = 0.84 V max at the input, comfortably inside the
+ * 3.6 V full-scale window.
+ *
+ * CAVEATS:
+ *   - This measures VDDH, not the cell as such. On USB power the rail is the
+ *     ~5 V input, not the battery, so a reading of ~5 V means "on charger", not
+ *     "overcharged cell". Trust the number only on battery.
+ *   - Requires that B+ actually reaches VDDH — true on genuine nice!nano and
+ *     most clones. VERIFY once against a multimeter on the cell before trusting
+ *     it, the same way the resistor version below was validated.
+ *
+ * PREVIOUS external-divider version (P0.02/AIN0), kept for reference if the two
+ * resistors are ever fitted:
  *
  *   BAT+ ──[ 100k ]──┬──[ 100k ]── GND
  *                    │
  *                  P0.02 (AIN0)
  *
- * A cell tops out at 4.2 V, well over the SAADC's 3.6 V ceiling at the best
- * gain, so it has to be divided. 100k/100k halves it to 2.1 V max and draws
- * 21 uA — about 15 mAh a month, nothing against a 3500 mAh cell, and the
- * hardware switch cuts even that.
+ *   channel@0: zephyr,input-positive = <NRF_SAADC_AIN0>;
+ *              acquisition-time = 40 us (50k source impedance needs a long
+ *              window to charge the sampling cap);
+ *   vbatt:     output-ohms = <100000>; full-ohms = <200000>;
  *
- * Values are read from this node at build time, so any ratio works: just
- * update output-ohms (lower leg) and full-ohms (both legs).
- *
- * NOTE: some nice!nano clones already have a battery divider on P0.31/AIN7.
- * If yours does, point io-channels at AIN7 and set the ratio to match rather
- * than fitting these resistors — but MEASURE it first, the ratio varies.
+ * Some clones instead ship a divider on P0.31/AIN7 — if yours does, use AIN7
+ * and MEASURE the ratio, it varies.
  */
 &adc {
     status = "okay";
@@ -108,35 +125,33 @@
         reg = <0>;
         zephyr,gain = "ADC_GAIN_1_6";              /* 0.6 V ref x 6 = 3.6 V FS */
         zephyr,reference = "ADC_REF_INTERNAL";
-        /* 40 us: the 50k source impedance of the divider needs a long
-         * acquisition window to charge the sampling capacitor. */
+        /* VDDHDIV5 is a low-impedance internal source, but a generous window
+         * costs nothing here and keeps the reading quiet. */
         zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 40)>;
-        zephyr,input-positive = <NRF_SAADC_AIN0>;  /* P0.02 */
+        zephyr,input-positive = <NRF_SAADC_VDDHDIV5>;
         zephyr,resolution = <12>;
     };
 };
 
 / {
     /*
-     * Battery sense divider. Enable (status = "okay") only when the two
-     * resistors are physically fitted — on this build they are, and the reading
-     * was verified against a multimeter (3867 mV firmware vs 3.86 V measured).
+     * Battery sense scaling. The "voltage-divider" binding is reused purely for
+     * its full/output ratio: battery.c multiplies the ADC reading by
+     * full-ohms/output-ohms, so 5/1 undoes the VDDHDIV5 divide-by-five and
+     * recovers the cell voltage. There are no physical resistors now.
      *
-     * Why presence must be DECLARED here, not auto-detected: with no divider the
-     * pin floats, and a floating SAADC input does not read a convenient zero —
-     * measured on this board it wandered between 2.1 V and 2.8 V, entirely
-     * plausible voltages for a dying cell. No threshold can separate "unwired"
-     * from "flat", so an auto-detecting firmware read ~2.6 V, believed it, and
-     * blanked the strip. Hence: set status by hand, never infer from the signal.
-     * While disabled, the battery code compiles to stubs and battery_init()
-     * returns -ENODEV, which main() treats as non-fatal.
+     * Kept enabled (status = "okay") because the sense path is always present:
+     * VDDHDIV5 is internal and cannot be "unfitted" like the old resistors. The
+     * plausibility window in battery.c still guards against a board where B+
+     * does not reach VDDH — an implausible reading disables monitoring rather
+     * than blanking the strip. VERIFY once against a multimeter on the cell.
      */
     vbatt: vbatt {
         compatible = "voltage-divider";
         status = "okay";
         io-channels = <&adc 0>;
-        output-ohms = <100000>;
-        full-ohms   = <200000>;
+        output-ohms = <1>;      /* VDDHDIV5 → cell = reading x 5 */
+        full-ohms   = <5>;
     };
 };
 
