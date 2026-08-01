@@ -43,7 +43,7 @@ static struct led_rgb pixels[STRIP_MAX_PIXELS];
 
 /* State — written from BLE thread, read from LED thread */
 static K_MUTEX_DEFINE(state_mutex);
-static led_effect_t state_effect     = EFFECT_RAINBOW; /* visible on boot for hw test */
+static led_effect_t state_effect     = EFFECT_RAINBOW; /* boot default; overridden by settings */
 static uint8_t      state_r          = 255;
 static uint8_t      state_g          = 0;
 static uint8_t      state_b          = 0;
@@ -102,6 +102,7 @@ static int8_t       ring_dir[LED_RINGS];
  *   led/spd    uint8_t   animation speed
  *   led/auto   uint8_t   auto colour-cycle mode (0/1)
  *   led/order  uint8_t   strip colour order (led_color_order_t)
+ *   led/fx     uint8_t   active effect (led_effect_t index)
  *   led/geo    blob      ring calibration (per-ring top index + direction)
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
@@ -113,9 +114,14 @@ static int8_t       ring_dir[LED_RINGS];
  * against the stored value and skips the write when unchanged, so an
  * unmodified field costs a read, not a flash erase.
  *
- * The effect and colour are deliberately NOT persisted — the effect is stored
- * as a bare index, and renumbering the enum would silently restore the wrong
- * one. Add them here if that becomes worth handling.
+ * The effect IS persisted (led/fx) as a bare led_effect_t index. This is safe
+ * only because the enum values are explicit and append-only — never renumber an
+ * existing effect, or a saved index would restore the wrong one. On load the
+ * value is range-checked against EFFECT_MAX, so a value written by a firmware
+ * with more effects is ignored rather than restoring garbage.
+ *
+ * The colour is still deliberately NOT persisted. Add it here if that becomes
+ * worth handling.
  */
 #define SETTINGS_SAVE_DELAY  K_MSEC(750)
 
@@ -137,6 +143,7 @@ static void settings_save_fn(struct k_work *work)
     uint8_t  speed      = state_speed;
     uint8_t  auto_color = state_auto_color ? 1U : 0U;
     uint8_t  order      = (uint8_t)state_color_order;
+    uint8_t  effect     = (uint8_t)state_effect;
     for (int i = 0; i < LED_RINGS; i++) {
         geo.top[i] = ring_top[i];
         geo.dir[i] = ring_dir[i];
@@ -166,6 +173,11 @@ static void settings_save_fn(struct k_work *work)
     err = settings_save_one("led/order", &order, sizeof(order));
     if (err) {
         LOG_ERR("Failed to persist colour order: %d", err);
+    }
+
+    err = settings_save_one("led/fx", &effect, sizeof(effect));
+    if (err) {
+        LOG_ERR("Failed to persist effect: %d", err);
     }
 
     err = settings_save_one("led/geo", &geo, sizeof(geo));
@@ -281,6 +293,29 @@ static int led_settings_set(const char *name, size_t len,
 
         state_color_order = (led_color_order_t)order;
         LOG_INF("Restored colour order: %s", color_orders[order].name);
+        return 0;
+    }
+
+    if (settings_name_steq(name, "fx", &next) && !next) {
+        uint8_t effect;
+
+        if (len != sizeof(effect)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &effect, sizeof(effect));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Guard against a value saved by a firmware with more effects. */
+        if (effect > EFFECT_MAX) {
+            LOG_WRN("Stored effect %u out of range, ignoring", effect);
+            return 0;
+        }
+
+        state_effect = (led_effect_t)effect;
+        LOG_INF("Restored effect: %u", effect);
         return 0;
     }
 
@@ -602,6 +637,8 @@ void led_effects_set_effect(led_effect_t effect)
     state_identify = -1;   /* selecting an effect leaves identify mode */
     k_mutex_unlock(&state_mutex);
     LOG_INF("Effect → %d", effect);
+
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
 }
 
 led_effect_t led_effects_get_effect(void)

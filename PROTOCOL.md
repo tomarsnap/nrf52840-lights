@@ -70,7 +70,7 @@ command is ignored (and logged over serial, which is disabled in production, so
 
 | Command | Arg range | Example | Effect | Persisted |
 |---|---|---|---|---|
-| `E<n>` | `0`–`10` (see enum) | `E2` | Select effect | no |
+| `E<n>` | `0`–`10` (see enum) | `E2` | Select effect | **yes** |
 | `C<r>,<g>,<b>` | each `0`–`255` | `C255,0,128` | Set colour | no |
 | `B<n>` | `0`–`255` | `B128` | Brightness (`0` = off) | **yes** |
 | `S<n>` | `0`–`255` | `S200` | Animation speed (`0` slow … `255` fast) | **yes** |
@@ -104,9 +104,9 @@ command is ignored (and logged over serial, which is disabled in production, so
 > is fine.
 
 **Persistence:** persisted values are debounced ~750 ms after the last change,
-then written to flash and restored on boot. Effect and colour are **not**
-persisted (they reset to the boot default), which is why the app should read them
-back with `?` on connect rather than assuming.
+then written to flash and restored on boot. Colour is **not** persisted (it
+resets to the boot default), which is why the app should read state back with
+`?` on connect rather than assuming.
 
 ### Geometry (`K` / `I`)
 
@@ -217,6 +217,6 @@ r(\d+) top (\d+) dir ([+-]\d+)
 - **The live colour drifts under `A1`.** With auto colour cycle on, the colour
   reported by `?` keeps changing on its own; a colour picker should reflect that
   it's not authoritative while `auto 1`.
-- **Effect/colour are not persisted**; everything else is. Don't assume the
-  device came up with the colour you last set.
+- **Colour is not persisted**; everything else is (effect included). Don't
+  assume the device came up with the colour you last set.
 ```
