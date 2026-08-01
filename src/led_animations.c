@@ -461,7 +461,9 @@ static uint32_t render_pinwheel(const struct led_frame *f)
     uint8_t base0 = led_rgb_hue(f->r, f->g, f->b);
 
     for (int ring = 0; ring < led_ring_count(f); ring++) {
-        uint8_t  base = (ring == 0) ? base0 : companion_hue;
+        /* Ring 1 gets its own drifting hue only under auto-colour; otherwise it
+         * shares ring 0's colour and just counter-rotates, so A0 stays steady. */
+        uint8_t  base = (ring == 0 || !f->auto_color) ? base0 : companion_hue;
         uint16_t rr   = (ring == 0) ? rot : (uint16_t)((len - rot % len) % len);
 
         for (uint16_t p = 0; p < len; p++) {
