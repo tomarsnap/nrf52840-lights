@@ -478,9 +478,11 @@ static uint32_t render_pinwheel(const struct led_frame *f)
     }
 
     uint16_t prev = rot;
-    /* max_step 6 spins the wheel much faster at the top of the range (past the
-     * midpoint); may look a touch strobey at the very top on a small ring. */
-    rot = (uint16_t)((rot + led_speed_step(f->speed, 6U)) % len);
+    /* max_step 2, deliberately low: the wedges have hard edges, so a multi-pixel
+     * jump reads as the pattern skipping rather than spinning. This keeps the
+     * advance at 1 px/frame (framerate-limited, smooth) across the whole range
+     * and only steps 2 at the very top (speed 255), so motion stays fluid. */
+    rot = (uint16_t)((rot + led_speed_step(f->speed, 2U)) % len);
     if (rot < prev) {
         companion_hue += (uint8_t)(40U + (sys_rand32_get() % 176U));
         led_cycle_color(f);
