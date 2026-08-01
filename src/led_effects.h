@@ -9,7 +9,7 @@ typedef enum {
     EFFECT_RAINBOW   = 2,
     EFFECT_BREATHE   = 3,
     EFFECT_WORM      = 4,
-    EFFECT_SPARKLE   = 5,   /* sparkle + travelling gradient, ring 1 randomised */
+    EFFECT_SPARKLE   = 5,   /* sparkle + travelling gradient; ring 1 diverges only in auto-colour */
     EFFECT_AURORA    = 6,   /* slow flowing gradient, tinted by the global colour */
     EFFECT_HEARTBEAT = 7,   /* lub-dub brightness pulse in the global colour      */
     EFFECT_FIREFLY   = 8,   /* sparse independent twinkles fading in and out      */

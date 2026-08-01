@@ -187,9 +187,12 @@ static uint32_t render_worm(const struct led_frame *f)
  *
  * Each ring carries a colour gradient wrapped once around it, with a brighter
  * "comet" arc sweeping around; on top, individual pixels flare toward white and
- * fade out (the sparkle). Ring 0's gradient is the user's global colour; ring 1
- * derives a RANDOMISED companion hue, refreshed each lap — the two eyes shimmer
- * in related but different colours, which is the whole point of the effect.
+ * fade out (the sparkle). Ring 0's gradient is the user's global colour. Ring 1
+ * only diverges when auto-colour (A1) is on: it then derives a RANDOMISED
+ * companion hue, refreshed each lap, so the two eyes shimmer in related but
+ * different colours. With auto-colour off the user picked a specific colour, so
+ * ring 1 simply mirrors ring 0 — a second, independently drifting eye would
+ * look wrong against a colour the user deliberately chose.
  *
  * Structure is two passes: draw the gradient+comet per ring in LOGICAL
  * positions (so the geometry engine aligns both eyes), then a sparkle overlay
@@ -220,7 +223,8 @@ static uint32_t render_sparkle(const struct led_frame *f)
     for (int ring = 0; ring < led_ring_count(f); ring++) {
         struct led_rgb anchor;
 
-        if (ring == 0) {
+        if (ring == 0 || !f->auto_color) {
+            /* ring 0 always, and ring 1 too unless auto-colour is drifting it */
             anchor = (struct led_rgb){ .r = f->r, .g = f->g, .b = f->b };
         } else {
             uint8_t cr, cg, cb;
@@ -247,11 +251,30 @@ static uint32_t render_sparkle(const struct led_frame *f)
         }
     }
 
-    /* 3. sparkle overlay over physical pixels: seed, then push toward white */
+    /*
+     * 3. sparkle overlay over physical pixels. Seed CLUSTERS rather than lone
+     * pixels: when a pixel is chosen, light it and its two neighbours (a
+     * five-pixel core with a brighter middle), so each glint reads as a chunky
+     * twinkle instead of a single-LED dot. The seed probability is lowered to
+     * match, since one seed now paints several pixels.
+     */
     for (uint16_t i = 0; i < f->count; i++) {
-        if ((sys_rand32_get() % 60U) == 0U) {
-            spark[i] = 255U;
+        if ((sys_rand32_get() % 140U) == 0U) {
+            /* neighbour falloff within the cluster; centre burns brightest */
+            static const uint8_t cluster[5] = { 150U, 220U, 255U, 220U, 150U };
+            for (int k = -2; k <= 2; k++) {
+                int j = (int)i + k;
+                if (j < 0 || j >= (int)f->count) {
+                    continue;
+                }
+                uint8_t v = cluster[k + 2];
+                if (v > spark[j]) {
+                    spark[j] = v;
+                }
+            }
         }
+    }
+    for (uint16_t i = 0; i < f->count; i++) {
         if (spark[i] != 0U) {
             f->pixels[i] = led_lerp(f->pixels[i], white,
                                     led_scale(spark[i], f->brightness));
