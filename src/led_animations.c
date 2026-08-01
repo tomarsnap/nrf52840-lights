@@ -415,16 +415,39 @@ static uint32_t render_firefly(const struct led_frame *f)
 
     uint8_t base = led_rgb_hue(f->r, f->g, f->b);
 
+    /* Fade everyone first, so ignition below only sees genuinely dark pixels. */
     for (uint16_t i = 0; i < f->count; i++) {
         fly[i] = (fly[i] > decay) ? (uint8_t)(fly[i] - decay) : 0U;
+    }
 
-        /* rarely ignite a new firefly on a dark pixel */
-        if (fly[i] == 0U && (sys_rand32_get() % seed) == 0U) {
-            fly[i]     = (uint8_t)(140U + (sys_rand32_get() % 116U));  /* 140..255 */
-            int jitter = (int)(sys_rand32_get() % 31U) - 15;           /* ±15 hue  */
-            fly_hue[i] = (uint8_t)((int)base + jitter);
+    /* Rarely ignite a new firefly on a dark pixel — not a lone LED but a soft
+     * glow a few pixels wide, tapering from the centre, so it has some body. As
+     * it fades the dim edges reach 0 first, so the glow shrinks like a real one.
+     * Seeding a cluster lights its neighbours, which keeps them from igniting
+     * their own centre next to this one, so the fireflies stay distinct. */
+    static const uint8_t profile[5] = { 64U, 160U, 255U, 160U, 64U };
+    for (uint16_t i = 0; i < f->count; i++) {
+        if (fly[i] != 0U || (sys_rand32_get() % seed) != 0U) {
+            continue;
         }
+        uint8_t peak   = (uint8_t)(140U + (sys_rand32_get() % 116U));  /* 140..255 */
+        int     jitter = (int)(sys_rand32_get() % 31U) - 15;           /* ±15 hue  */
+        uint8_t hue    = (uint8_t)((int)base + jitter);
 
+        for (int k = -2; k <= 2; k++) {
+            int j = (int)i + k;
+            if (j < 0 || j >= (int)f->count) {
+                continue;
+            }
+            uint8_t lvl = (uint8_t)((uint16_t)peak * profile[k + 2] / 255U);
+            if (lvl > fly[j]) {
+                fly[j]     = lvl;
+                fly_hue[j] = hue;
+            }
+        }
+    }
+
+    for (uint16_t i = 0; i < f->count; i++) {
         if (fly[i] != 0U) {
             uint8_t hr, hg, hb;
             led_hsv_to_rgb(fly_hue[i], &hr, &hg, &hb);
