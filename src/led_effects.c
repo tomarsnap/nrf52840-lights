@@ -1,5 +1,6 @@
 #include "led_effects.h"
 #include "led_animations.h"
+#include "blled_ws2812.h"
 
 #include <errno.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/led_strip.h>
+#include <zephyr/dt-bindings/led/led.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/random/random.h>
 #include <zephyr/settings/settings.h>
@@ -51,6 +53,29 @@ static uint8_t      state_speed      = DEFAULT_SPEED;      /* overridden by sett
 static bool         state_auto_color;  /* re-randomise colour each cycle (persisted) */
 static bool         state_lockout;   /* battery critical — force output black */
 static int32_t      state_identify   = -1;  /* diagnostic single-pixel spotlight, -1 = off */
+/* Strip colour order — default GRB (a stock WS2812); overridden by settings. */
+static led_color_order_t state_color_order = LED_ORDER_GRB;
+
+/*
+ * Colour-order table: each order's on-wire channel list (one LED_COLOR_ID_* per
+ * byte) and its stable protocol name. Indexed by led_color_order_t. The White
+ * byte is emitted as 0 by the driver — struct led_rgb has no white channel — so
+ * the *W orders drive an SK6812-RGBW strip's R/G/B correctly with white dark.
+ */
+static const struct color_order_def {
+    uint8_t     mapping[4];
+    uint8_t     num_colors;
+    const char *name;
+} color_orders[] = {
+    [LED_ORDER_GRB]  = {{LED_COLOR_ID_GREEN, LED_COLOR_ID_RED,
+                         LED_COLOR_ID_BLUE},                      3, "grb"},
+    [LED_ORDER_RGB]  = {{LED_COLOR_ID_RED, LED_COLOR_ID_GREEN,
+                         LED_COLOR_ID_BLUE},                      3, "rgb"},
+    [LED_ORDER_GRBW] = {{LED_COLOR_ID_GREEN, LED_COLOR_ID_RED,
+                         LED_COLOR_ID_BLUE, LED_COLOR_ID_WHITE},  4, "grbw"},
+    [LED_ORDER_RGBW] = {{LED_COLOR_ID_RED, LED_COLOR_ID_GREEN,
+                         LED_COLOR_ID_BLUE, LED_COLOR_ID_WHITE},  4, "rgbw"},
+};
 
 /*
  * Ring calibration — the physical-mounting half of the geometry (see
@@ -76,6 +101,7 @@ static int8_t       ring_dir[LED_RINGS];
  *   led/bri    uint8_t   brightness
  *   led/spd    uint8_t   animation speed
  *   led/auto   uint8_t   auto colour-cycle mode (0/1)
+ *   led/order  uint8_t   strip colour order (led_color_order_t)
  *   led/geo    blob      ring calibration (per-ring top index + direction)
  *
  * Saving is deferred to a work item rather than done inline: settings_save_one()
@@ -110,6 +136,7 @@ static void settings_save_fn(struct k_work *work)
     uint8_t  brightness = state_brightness;
     uint8_t  speed      = state_speed;
     uint8_t  auto_color = state_auto_color ? 1U : 0U;
+    uint8_t  order      = (uint8_t)state_color_order;
     for (int i = 0; i < LED_RINGS; i++) {
         geo.top[i] = ring_top[i];
         geo.dir[i] = ring_dir[i];
@@ -134,6 +161,11 @@ static void settings_save_fn(struct k_work *work)
     err = settings_save_one("led/auto", &auto_color, sizeof(auto_color));
     if (err) {
         LOG_ERR("Failed to persist auto-colour mode: %d", err);
+    }
+
+    err = settings_save_one("led/order", &order, sizeof(order));
+    if (err) {
+        LOG_ERR("Failed to persist colour order: %d", err);
     }
 
     err = settings_save_one("led/geo", &geo, sizeof(geo));
@@ -226,6 +258,29 @@ static int led_settings_set(const char *name, size_t len,
 
         state_auto_color = (auto_color != 0U);
         LOG_INF("Restored auto-colour mode: %u", auto_color);
+        return 0;
+    }
+
+    if (settings_name_steq(name, "order", &next) && !next) {
+        uint8_t order;
+
+        if (len != sizeof(order)) {
+            return -EINVAL;
+        }
+
+        ssize_t rc = read_cb(cb_arg, &order, sizeof(order));
+        if (rc < 0) {
+            return (int)rc;
+        }
+
+        /* Guard against a value saved by a firmware with more orders. */
+        if (order > LED_ORDER_MAX) {
+            LOG_WRN("Stored colour order %u out of range, ignoring", order);
+            return 0;
+        }
+
+        state_color_order = (led_color_order_t)order;
+        LOG_INF("Restored colour order: %s", color_orders[order].name);
         return 0;
     }
 
@@ -423,6 +478,30 @@ static void led_thread_fn(void *a, void *b, void *c)
 K_THREAD_DEFINE(led_thread, 2048, led_thread_fn, NULL, NULL, NULL, 7, 0,
                 K_TICKS_FOREVER);
 
+/* ── Colour order ─────────────────────────────────────────────────────────── */
+
+/*
+ * Push a colour order to the strip driver. The driver makes the change on its
+ * next frame and serialises accesses with its own lock, so this is safe to call
+ * from the BLE thread while the LED thread is rendering. Pure re-programming —
+ * no persistence; the caller schedules the flash save.
+ */
+static void apply_color_order(led_color_order_t order)
+{
+    if ((int)order < 0 || order > LED_ORDER_MAX) {
+        return;
+    }
+
+    const struct color_order_def *d = &color_orders[order];
+    int err = blled_ws2812_set_color_order(strip, d->mapping, d->num_colors);
+
+    if (err) {
+        LOG_ERR("Failed to set colour order %s: %d", d->name, err);
+    } else {
+        LOG_INF("Colour order → %s", d->name);
+    }
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 int led_effects_init(void)
@@ -452,8 +531,14 @@ int led_effects_init(void)
         }
     }
 
-    LOG_INF("LED strip ready: %u active of %d max pixels, brightness %u",
-            state_count, STRIP_MAX_PIXELS, state_brightness);
+    /* Program the restored (or default) colour order into the strip driver
+     * before the first frame is rendered, so pixels come out in the right
+     * order from the very first update. */
+    apply_color_order(state_color_order);
+
+    LOG_INF("LED strip ready: %u active of %d max pixels, brightness %u, order %s",
+            state_count, STRIP_MAX_PIXELS, state_brightness,
+            color_orders[state_color_order].name);
     return 0;
 }
 
@@ -596,6 +681,41 @@ bool led_effects_get_auto_color(void)
     k_mutex_unlock(&state_mutex);
 
     return on;
+}
+
+int led_effects_set_color_order(led_color_order_t order)
+{
+    if ((int)order < 0 || order > LED_ORDER_MAX) {
+        return -EINVAL;
+    }
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    state_color_order = order;
+    k_mutex_unlock(&state_mutex);
+
+    /* Re-program the strip now; persist after the usual debounce. */
+    apply_color_order(order);
+    k_work_reschedule(&settings_save_work, SETTINGS_SAVE_DELAY);
+
+    return 0;
+}
+
+led_color_order_t led_effects_get_color_order(void)
+{
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    led_color_order_t order = state_color_order;
+    k_mutex_unlock(&state_mutex);
+
+    return order;
+}
+
+const char *led_color_order_name(led_color_order_t order)
+{
+    if ((int)order < 0 || order > LED_ORDER_MAX) {
+        return "?";
+    }
+
+    return color_orders[order].name;
 }
 
 void led_effects_cycle_color(void)

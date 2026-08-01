@@ -1,0 +1,61 @@
+# Copyright (c) 2022 Jonathan Rico
+# Copyright (c) 2026 bl-led
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Worldsemi WS2812 / SK6812 LED strip over I2S, with a RUNTIME-SWITCHABLE
+  colour order.
+
+  A near-verbatim fork of "worldsemi,ws2812-i2s" (see drivers/ws2812_i2s_runtime/)
+  that lets the on-wire byte order and channel COUNT be changed at run time via
+  blled_ws2812_set_color_order() — so one firmware image drives both a 3-channel
+  GRB WS2812 strip and a 4-channel GRBW SK6812-RGBW strip, selectable over BLE
+  and persisted to flash.
+
+  `color-mapping` gives the DEFAULT order used until the app sets one (GRB, like
+  a stock WS2812). `max-colors` sizes the static I2S DMA buffer for the WIDEST
+  order the runtime may select (4 for RGBW); it must be >= the length of
+  `color-mapping` and any order later selected.
+
+compatible: "blled,ws2812-i2s-runtime"
+
+include: [base.yaml, ws2812.yaml]
+
+properties:
+
+  i2s-dev:
+    type: phandle
+    required: true
+    description: Pointer to the I2S instance.
+
+  max-colors:
+    type: int
+    default: 4
+    description: |
+      Maximum channels per pixel the runtime may select (3 for RGB/GRB, 4 for
+      RGBW/GRBW). Sizes the static I2S DMA buffer; must be >= color-mapping
+      length. Capped at 4 by the driver.
+
+  out-active-low:
+    type: boolean
+    description: True if the output pin is active low.
+
+  nibble-one:
+    type: int
+    default: 0x0E
+    description: 4-bit value to shift out for a 1 pulse.
+
+  nibble-zero:
+    type: int
+    default: 0x08
+    description: 4-bit value to shift out for a 0 pulse.
+
+  lrck-period:
+    type: int
+    default: 10
+    description: LRCK (left/right clock) period in microseconds.
+
+  extra-wait-time:
+    type: int
+    default: 300
+    description: Extra microseconds to wait for the driver to flush its I2S queue.

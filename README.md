@@ -10,6 +10,8 @@ using the Nordic UART Service (NUS).
 - BLE control via Nordic UART Service
 - Simple ASCII command protocol
 - WS2812 driven over **I2S** (see the gotchas — SPI does not work on this board)
+- Runtime-switchable strip colour order — 3-channel WS2812 (GRB/RGB) **and**
+  4-channel SK6812-RGBW (GRBW/RGBW), persisted (see [Strip colour order](#strip-colour-order))
 
 ---
 
@@ -81,6 +83,41 @@ RAM cost is negligible at any realistic size. The I2S buffer is
 | 72 | 916 B | 1832 B |
 
 Power, not memory, is the limit that matters.
+
+### Strip colour order
+
+**The colour order is set at runtime and persists** — send `O<order>` over BLE
+(`grb`, `rgb`, `grbw`, or `rgbw`, case-insensitive) and it is saved to flash, so
+one firmware image drives strips of different chemistries:
+
+| Order | Channels | Typical strip |
+|---|---|---|
+| `grb` | 3 | WS2812 / WS2812B / plain SK6812 (**default**) |
+| `rgb` | 3 | RGB-ordered 3-wire strips |
+| `grbw` | 4 | **SK6812-RGBW** |
+| `rgbw` | 4 | RGBW-ordered 4-channel strips |
+
+Unlike the other settings this re-programs the **strip driver**: the `*w` orders
+widen the on-wire frame from 3 to 4 bytes per pixel. That is why it can't be a
+pure software colour swap — the stock Zephyr `ws2812-i2s` driver freezes the
+byte order and frame width at build time (its `color_mapping` is `const` and the
+DMA buffer is sized from the mapping length). So the strip is driven by an
+**in-tree fork of that driver**, `drivers/ws2812_i2s_runtime/`, which moves the
+mapping and channel count into mutable state behind
+`blled_ws2812_set_color_order()`. The DMA buffer is always sized for the widest
+order (`max-colors = <4>` in the overlay), costing ~0.6 KB of RAM — negligible
+on this SoC. Bit timing is shared; SK6812 tolerates WS2812 T0H/T1H, standard
+practice.
+
+**On SK6812-RGBW the dedicated white die stays off.** The colour pipeline
+(`struct led_rgb`) has no white channel, so the driver emits `0` for the White
+byte — every colour is mixed from the R/G/B dies, exactly as on a 3-channel
+strip. Driving the white LED would need a 4th channel through the whole effect
+engine; it's out of scope.
+
+Set it once for your hardware. A wrong order (e.g. `grbw` on a 3-channel strip)
+mis-frames the data and garbles the display, but it's recoverable — send the
+correct `O` value and it persists.
 
 ### Two rings and mirroring
 
@@ -256,6 +293,7 @@ Case-insensitive ASCII.
 | `S<0-255>` | `S200` | Set animation speed (0=slowest, 255=fastest). **Persisted** |
 | `A<0\|1>` | `A1` | Auto colour cycle: re-randomise the colour each animation cycle. **Persisted** |
 | `N<count>` | `N36` | Set pixel count (1–72). **Persisted** |
+| `O<order>` | `Ogrbw` | Strip colour order: `grb`/`rgb`/`grbw`/`rgbw` (text). **Persisted** — see [Strip colour order](#strip-colour-order) |
 | `K<ring>,<top>,<dir>` | `K0,5,1` | Calibrate a ring: physical top pixel + winding (+1/−1). **Persisted** |
 | `I<pixel>` | `I5` | Identify: light one physical pixel (negative = off) |
 | `?` | `?` | Report battery, geometry and effect state |
@@ -311,6 +349,9 @@ bl-led/
 ├── boards/
 │   ├── nice_nano_nrf52840.overlay  # I2S + WS2812 node, console, entropy
 │   └── nicekeyboards/nice_nano/    # custom board definition
+├── drivers/ws2812_i2s_runtime/     # in-tree ws2812-i2s fork: runtime colour order
+├── dts/bindings/led_strip/         # binding for the fork's DT compatible
+├── include/blled_ws2812.h          # set-colour-order API (driver ↔ engine)
 ├── app/                            # companion Android app — scaffold, not started
 ├── scripts/setup.sh
 └── src/

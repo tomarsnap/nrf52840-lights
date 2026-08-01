@@ -35,7 +35,13 @@
     };
 
     led_strip: ws2812 {
-        compatible = "worldsemi,ws2812-i2s";
+        /*
+         * In-tree fork of the WS2812 I2S driver (drivers/ws2812_i2s_runtime/)
+         * with a RUNTIME-switchable colour order, so one firmware image drives
+         * both a 3-channel GRB WS2812 strip and a 4-channel GRBW SK6812-RGBW
+         * strip. The order is set over BLE ("O<order>") and persisted to NVS.
+         */
+        compatible = "blled,ws2812-i2s-runtime";
 
         i2s-dev = <&i2s0>;
         /*
@@ -48,10 +54,16 @@
          */
         chain-length = <72>;
 
-        /* WS2812 GRB byte order */
+        /*
+         * DEFAULT colour order: GRB (a stock WS2812), used until the app sets
+         * one from NVS at boot. The runtime may switch to RGB/GRBW/RGBW over
+         * BLE; `max-colors` sizes the I2S DMA buffer for the widest of those (4,
+         * for the RGBW variants) so widening the order at run time still fits.
+         */
         color-mapping = <LED_COLOR_ID_GREEN
                          LED_COLOR_ID_RED
                          LED_COLOR_ID_BLUE>;
+        max-colors = <4>;
 
         reset-delay = <120>;
 

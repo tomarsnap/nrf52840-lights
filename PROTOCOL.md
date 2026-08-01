@@ -76,6 +76,7 @@ command is ignored (and logged over serial, which is disabled in production, so
 | `S<n>` | `0`–`255` | `S200` | Animation speed (`0` slow … `255` fast) | **yes** |
 | `A<n>` | `0`/`1` (non-zero = on) | `A1` | Auto colour cycle | **yes** |
 | `N<n>` | `1`–`72` | `N36` | Active pixel count | **yes** |
+| `O<order>` | `grb`/`rgb`/`grbw`/`rgbw` | `Ogrbw` | Strip colour order | **yes** |
 | `K<ring>,<top>,<dir>` | see *Geometry* | `K0,5,1` | Calibrate a ring | **yes** |
 | `I<pixel>` | `-1`–`71` | `I5` | Identify one physical pixel (`-1` = off) | no |
 | `?` | — | `?` | Report full state (multi-line reply) | — |
@@ -119,6 +120,27 @@ ring's top by eye; selecting any effect (or `I-1`) leaves identify mode.
 Most apps only need to expose these on an "advanced/setup" screen — the everyday
 controls are `E`/`C`/`B`/`S`/`A`.
 
+### Colour order (`O`)
+
+`O<order>` selects the on-wire byte order the physical LEDs expect, so one
+firmware image drives different strip chemistries. The argument is a **text
+token, case-insensitive**: `grb`, `rgb`, `grbw`, or `rgbw`. It is persisted.
+
+| Order | Channels | Typical strip |
+|---|---|---|
+| `grb` | 3 | WS2812 / WS2812B / plain SK6812 (**default**) |
+| `rgb` | 3 | RGB-ordered 3-wire strips |
+| `grbw` | 4 | **SK6812-RGBW** |
+| `rgbw` | 4 | RGBW-ordered 4-channel strips |
+
+The `*w` orders clock out a **4th (White) byte per pixel**, which the firmware
+always sends as **0** — the colour pipeline has no white channel, so an
+SK6812-RGBW strip shows correct R/G/B with the dedicated white die dark. Picking
+a 4-channel order on a 3-channel strip (or vice-versa) mis-frames the data and
+garbles the display; it is recoverable by sending the right `O` value, which
+then persists. This is an "advanced/setup" control — set it once for the
+hardware and forget it.
+
 ---
 
 ## The `?` report
@@ -132,7 +154,7 @@ set below is stable.
 **Line 1 — state:**
 
 ```
-batt 3987 mV (86%) | pixels 36 | effect 3 | color 255,0,0 | bri 64 | spd 128 | auto 1
+batt 3987 mV (86%) | pixels 36 | effect 3 | color 255,0,0 | bri 64 | spd 128 | auto 1 | order grb
 ```
 
 | Field | Meaning |
@@ -144,6 +166,7 @@ batt 3987 mV (86%) | pixels 36 | effect 3 | color 255,0,0 | bri 64 | spd 128 | a
 | `bri <0-255>` | Brightness |
 | `spd <0-255>` | Speed |
 | `auto <0/1>` | Auto colour cycle on/off |
+| `order <grb\|rgb\|grbw\|rgbw>` | Strip colour order (the `O` value) |
 
 **Line 2 — ring geometry:**
 
@@ -163,6 +186,7 @@ pixels (\d+)
 effect (\d+)
 color (\d+),(\d+),(\d+)
 bri (\d+) | spd (\d+) | auto ([01])
+order (grb|rgb|grbw|rgbw)
 rings (\d+) x (\d+)
 r(\d+) top (\d+) dir ([+-]\d+)
 ```

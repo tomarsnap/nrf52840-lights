@@ -61,6 +61,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
  *   S<0-255>        set animation speed (0=slowest, 255=fastest)
  *   A<0|1>          auto colour cycle: re-randomise colour each animation cycle
  *   N<count>        set pixel count (1..chain-length), persisted to flash
+ *   O<order>        strip colour order: grb|rgb|grbw|rgbw (text), persisted
  *   K<ring>,<top>,<dir>  calibrate a ring: physical top pixel + direction (+1/-1)
  *   I<pixel>        identify: light one physical pixel to find a ring's top
  *                   (negative turns it off; any effect command also clears it)
@@ -186,6 +187,43 @@ static void on_nus_received(struct bt_conn *conn,
         }
         break;
     }
+    case 'o': {
+        /* O<order> — strip colour order, text and case-insensitive
+         * (grb/rgb/grbw/rgbw). Unlike the other settings this re-programs the
+         * strip DRIVER: the *W orders widen the frame to 4 channels, so one
+         * firmware image drives both a WS2812 and an SK6812-RGBW strip. The
+         * white byte is always 0 (no white channel in the pixel pipeline).
+         * Persisted by led_effects_set_color_order(). */
+        char        arg[8];
+        size_t      alen = 0;
+        const char *p    = &buf[1];
+
+        while (*p == ' ' || *p == '\t') {   /* tolerate "O grb" like atoi does */
+            p++;
+        }
+        for (; *p != '\0' && alen < sizeof(arg) - 1; p++) {
+            arg[alen++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p | 0x20) : *p;
+        }
+        arg[alen] = '\0';
+
+        led_color_order_t order;
+
+        if (strcmp(arg, "grb") == 0) {
+            order = LED_ORDER_GRB;
+        } else if (strcmp(arg, "rgb") == 0) {
+            order = LED_ORDER_RGB;
+        } else if (strcmp(arg, "grbw") == 0) {
+            order = LED_ORDER_GRBW;
+        } else if (strcmp(arg, "rgbw") == 0) {
+            order = LED_ORDER_RGBW;
+        } else {
+            LOG_WRN("Bad colour order '%s' (want grb/rgb/grbw/rgbw)", arg);
+            break;
+        }
+
+        led_effects_set_color_order(order);
+        break;
+    }
     case 'k': {
         /* K<ring>,<top>,<dir> — calibrate a ring's physical top and winding.
          * led_effects_set_ring_cal() range-checks all three against the
@@ -228,13 +266,14 @@ static void on_nus_received(struct bt_conn *conn,
          * parseable "key value" grammar — see PROTOCOL.md, which the companion
          * app relies on; do not reorder or rename fields without updating it. */
         n += snprintf(out + n, sizeof(out) - n,
-                      " | pixels %d | effect %d | color %u,%u,%u | bri %u | spd %u | auto %u\n",
+                      " | pixels %d | effect %d | color %u,%u,%u | bri %u | spd %u | auto %u | order %s\n",
                       led_effects_pixel_count(),
                       (int)led_effects_get_effect(),
                       cr, cg, cb,
                       led_effects_get_brightness(),
                       led_effects_get_speed(),
-                      led_effects_get_auto_color() ? 1U : 0U);
+                      led_effects_get_auto_color() ? 1U : 0U,
+                      led_color_order_name(led_effects_get_color_order()));
 
         /* Ring geometry: how the strip is split and each ring's calibration. */
         int rings = led_effects_ring_count();

@@ -21,6 +21,23 @@ typedef enum {
  * range-check the "E" command. */
 #define EFFECT_MAX  EFFECT_CONFETTI
 
+/*
+ * Strip colour order — the on-wire byte order the physical LEDs expect. Chosen
+ * at runtime ("O" command) and persisted, so one firmware image drives both a
+ * 3-channel GRB WS2812 strip and a 4-channel GRBW SK6812-RGBW strip. The *W
+ * variants add a White byte that is always emitted as 0 (the RGB pixel pipeline
+ * has no white channel), so an RGBW strip shows correct R/G/B with the white
+ * die dark. Applied to the strip driver via blled_ws2812_set_color_order().
+ */
+typedef enum {
+    LED_ORDER_GRB  = 0,   /* WS2812 / plain SK6812 — 3 channels (default) */
+    LED_ORDER_RGB  = 1,   /* RGB-ordered 3-channel strips                 */
+    LED_ORDER_GRBW = 2,   /* SK6812-RGBW — 4 channels                     */
+    LED_ORDER_RGBW = 3,   /* RGBW-ordered 4-channel strips                */
+} led_color_order_t;
+
+#define LED_ORDER_MAX  LED_ORDER_RGBW
+
 /* Returns 0 on success, -ENODEV if the strip device is not ready.
  * The effect thread only starts if this returns 0. */
 int led_effects_init(void);
@@ -91,6 +108,17 @@ bool led_effects_get_auto_color(void);
  * directly. Thread-safe.
  */
 void led_effects_cycle_color(void);
+
+/*
+ * Strip colour order. Persisted and restored at boot, like brightness. Setting
+ * it re-programs the strip driver immediately (takes effect on the next frame)
+ * and reschedules the deferred flash save. Returns -EINVAL for an unknown order.
+ * The name helper returns a stable lowercase token ("grb"/"rgb"/"grbw"/"rgbw")
+ * for the "?" report and the protocol; it never returns NULL.
+ */
+int led_effects_set_color_order(led_color_order_t order);
+led_color_order_t led_effects_get_color_order(void);
+const char *led_color_order_name(led_color_order_t order);
 
 /* Force the strip black regardless of effect, for a critical battery.
  * Not persisted — a reboot clears it. */
