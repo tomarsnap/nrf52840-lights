@@ -351,12 +351,15 @@ static uint32_t render_aurora(const struct led_frame *f)
     }
 
     uint16_t prev = t;
-    t = (uint16_t)((t + led_speed_step(f->speed, 3U)) & 0xFFU);
+    /* Smooth sinusoidal field, so it takes a brisk phase step (6) and a
+     * near-floor frame rate at the top without any strobing — the low half of
+     * the range still crawls (step 1, up to the 120 ms slow end). */
+    t = (uint16_t)((t + led_speed_step(f->speed, 6U)) & 0xFFU);
     if (t < prev) {
         led_cycle_color(f);   /* one slow cycle → drift colour if auto */
     }
 
-    return led_speed_delay(f->speed, 20U, 120U);
+    return led_speed_delay(f->speed, 12U, 120U);
 }
 
 /*
